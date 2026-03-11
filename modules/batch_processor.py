@@ -1,0 +1,230 @@
+"""批量处理流水线"""
+
+import os
+import logging
+import traceback
+from datetime import datetime
+
+import cv2
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+
+from config import SUPPORTED_EXTENSIONS
+from modules.file_ingestion import load_file
+from modules.pdf_vector_handler import is_vector_pdf, replace_text_in_pdf
+from modules.region_detector import detect_all_regions
+from modules.text_replacer import replace_in_all_regions
+
+logger = logging.getLogger(__name__)
+
+
+def _scan_files(input_dir: str) -> list[str]:
+    """扫描输入目录中所有支持的文件"""
+    files = []
+    for fname in sorted(os.listdir(input_dir)):
+        ext = os.path.splitext(fname)[1].lower()
+        if ext in SUPPORTED_EXTENSIONS:
+            files.append(os.path.join(input_dir, fname))
+    return files
+
+
+def process_single_file(
+    file_path: str,
+    output_dir: str,
+    region_config: dict = None,
+    generate_debug: bool = False,
+    regions_override: dict = None,
+    prefixes: list[str] = None,
+) -> dict:
+    """
+    处理单个图纸文件。
+
+    Args:
+        regions_override: 预检测的区域 dict（Phase 1 生成），跳过重新检测
+
+    返回 dict:
+      - file: 文件路径
+      - status: "success" / "error"
+      - method: "vector" / "ocr"
+      - replacements: 替换列表
+      - output_path: 输出文件路径
+      - error: 错误信息（如有）
+    """
+    basename = os.path.splitext(os.path.basename(file_path))[0]
+    ext = os.path.splitext(file_path)[1].lower()
+
+    # ── 矢量 PDF 快速路径 ──
+    if ext == ".pdf" and is_vector_pdf(file_path):
+        output_path = os.path.join(output_dir, basename + "_modified.pdf")
+        result = replace_text_in_pdf(file_path, output_path)
+        return {
+            "file": file_path,
+            "status": "success",
+            "method": "vector",
+            "replacements": result["replacements"],
+            "total": result["total"],
+            "output_path": output_path,
+        }
+
+    # ── 扫描版PDF预处理 ──
+    if ext == ".pdf":
+        from modules.file_ingestion import convert_pdf_to_tif
+        logger.info("检测到扫描版PDF，转换为TIF (600 DPI)")
+        file_path = convert_pdf_to_tif(file_path, output_dir, dpi=600)
+        ext = ".tif"
+
+    # ── TIF 文件大小压缩 ──
+    if ext in (".tif", ".tiff"):
+        from modules.file_ingestion import compress_tif
+        import shutil
+        size_kb = os.path.getsize(file_path) / 1024
+        if size_kb > 1300:
+            # 复制到输出目录再压缩，不动原文件
+            copy_path = os.path.join(output_dir, os.path.basename(file_path))
+            if os.path.abspath(file_path) != os.path.abspath(copy_path):
+                shutil.copy2(file_path, copy_path)
+                file_path = copy_path
+            file_path = compress_tif(file_path, max_kb=1300)
+
+    # ── OCR 图像路径 ──
+    img_array, metadata = load_file(file_path)
+    logger.info(
+        f"加载: {os.path.basename(file_path)} "
+        f"({img_array.shape[1]}x{img_array.shape[0]}, {metadata['format']})"
+    )
+
+    # 区域检测
+    if regions_override:
+        regions = regions_override
+        logger.info(f"使用预检测区域: {[k for k in regions if not k.startswith('_')]}")
+    else:
+        regions = detect_all_regions(img_array, region_config, prefixes=prefixes)
+
+    # 如果检测时旋转了图像，将 img_array 也旋转（后续操作都在旋转后的图像上）
+    rot_code = regions.get("_metadata", {}).get("rotation")
+    if rot_code is not None:
+        img_array = cv2.rotate(img_array, rot_code)
+        logger.info(f"应用旋转到图像: rot_code={rot_code}")
+
+    detected = {k: v for k, v in regions.items() if v is not None}
+    logger.info(f"检测到 {len(detected)} 个区域: {list(detected.keys())}")
+
+    # 调试：保存区域检测图
+    if generate_debug:
+        from modules.region_detector import draw_regions_debug
+
+        debug_img = draw_regions_debug(img_array, regions)
+        debug_path = os.path.join(output_dir, basename + "_debug_regions.jpg")
+        Image.fromarray(debug_img).save(debug_path, quality=90)
+
+    # 文本替换
+    modified, replacements = replace_in_all_regions(img_array, regions, filename=basename, prefixes=prefixes)
+
+    # 保存
+    output_path = os.path.join(output_dir, basename + "_modified.jpg")
+    Image.fromarray(modified).save(output_path, quality=95)
+
+    # 保存后验证
+    from modules.text_replacer import verify_output
+    verify_result = verify_output(output_path, regions, len(replacements))
+
+    return {
+        "file": file_path,
+        "status": "success",
+        "method": "ocr",
+        "replacements": replacements,
+        "total": len(replacements),
+        "output_path": output_path,
+        "regions_detected": list(detected.keys()),
+        "verify": verify_result,
+    }
+
+
+def process_batch(
+    input_dir: str,
+    output_dir: str,
+    region_config: dict = None,
+    generate_debug: bool = False,
+    prefixes: list[str] = None,
+) -> list[dict]:
+    """
+    批量处理目录中所有图纸。
+
+    返回处理结果列表。
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    files = _scan_files(input_dir)
+    if not files:
+        logger.warning(f"输入目录没有找到支持的文件: {input_dir}")
+        return []
+
+    logger.info(f"共找到 {len(files)} 个文件待处理")
+    results = []
+
+    for file_path in tqdm(files, desc="处理图纸", unit="张"):
+        try:
+            result = process_single_file(
+                file_path, output_dir, region_config, generate_debug,
+                prefixes=prefixes,
+            )
+            results.append(result)
+            logger.info(
+                f"  ✓ {os.path.basename(file_path)}: "
+                f"{result['total']} 处替换 ({result['method']})"
+            )
+        except Exception as e:
+            logger.error(f"  ✗ {os.path.basename(file_path)}: {e}")
+            results.append({
+                "file": file_path,
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            })
+
+    # 统计
+    success = sum(1 for r in results if r["status"] == "success")
+    total_repls = sum(r.get("total", 0) for r in results if r["status"] == "success")
+    logger.info(
+        f"\n处理完成: {success}/{len(results)} 成功, 共 {total_repls} 处替换"
+    )
+
+    # 生成报告
+    _save_report(results, output_dir)
+    return results
+
+
+def _save_report(results: list[dict], output_dir: str):
+    """生成简单的文本处理报告"""
+    report_path = os.path.join(output_dir, "processing_report.txt")
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(f"图纸批量处理报告\n")
+        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"{'=' * 60}\n\n")
+
+        success = [r for r in results if r["status"] == "success"]
+        errors = [r for r in results if r["status"] == "error"]
+
+        f.write(f"总计: {len(results)} 个文件\n")
+        f.write(f"成功: {len(success)}\n")
+        f.write(f"失败: {len(errors)}\n")
+        total_repls = sum(r.get("total", 0) for r in success)
+        f.write(f"总替换数: {total_repls}\n\n")
+
+        if success:
+            f.write("成功列表:\n")
+            for r in success:
+                f.write(
+                    f"  {os.path.basename(r['file'])} "
+                    f"[{r['method']}] {r['total']} 处替换\n"
+                )
+                for old, new in r.get("replacements", []):
+                    if isinstance(old, str):
+                        f.write(f"    {old} → {new}\n")
+
+        if errors:
+            f.write(f"\n失败列表:\n")
+            for r in errors:
+                f.write(f"  {os.path.basename(r['file'])}: {r.get('error', 'unknown')}\n")
+
+    logger.info(f"报告已保存: {report_path}")

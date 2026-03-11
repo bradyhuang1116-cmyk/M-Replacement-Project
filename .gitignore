@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# 输出文件夹
+output/
+results/
+
+# 临时文件
+*.log
+nul
+temp_*.tif
+
+# 测试图片（不上传大文件）
+TIF_Undo/
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.pdf
+debug_strike/
+
+# 字体文件
+fonts/*.ttf
+fonts/*.otf
+*.ttf
+*.otf
+
+# GitHub 克隆副本
+Mitsubishi-Electric-Drawing-Replacement-Project/
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

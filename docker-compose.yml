@@ -1,0 +1,33 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - FLAGS_use_mkldnn=0
+      - FLAGS_enable_pir_api=0
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+    restart: unless-stopped
+
+  gradio:
+    build: .
+    command: python web_app.py
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./output:/app/output
+    environment:
+      - FLAGS_use_mkldnn=0
+      - FLAGS_enable_pir_api=0
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+    restart: unless-stopped
+
+volumes:
+  uploads:
+  output:
