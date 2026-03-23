@@ -10,12 +10,13 @@ NEW_PREFIX = "H"
 
 
 def make_pattern(prefixes=None):
-    """生成匹配正则，支持多个首字母。如 ["Y","A"] → r'\b[YA][A-Z0-9]{8}\b'"""
+    """生成匹配正则，支持多个首字母。如 ["Y","A"] → r'\b[YA][A-Z0-9]{4,}\b'
+    匹配首字母 + 至少4位字母数字（总长 >= 5）。"""
     prefixes = prefixes or DEFAULT_PREFIXES
     chars = "".join(p.upper() for p in prefixes)
     if len(chars) == 1:
-        return rf"\b{chars}[A-Z0-9]{{8}}\b"
-    return rf"\b[{chars}][A-Z0-9]{{8}}\b"
+        return rf"\b{chars}[A-Z0-9]{{4,}}\b"
+    return rf"\b[{chars}][A-Z0-9]{{4,}}\b"
 
 
 # Y 编号匹配正则 —— 保持向后兼容
@@ -32,6 +33,37 @@ FUZZY_DIGIT_MAP = {
 # OCR 配置
 OCR_LANG_EN = "en"
 OCR_LANG_CH = "ch"
+
+# OCR 模型配置（运行时可通过 set_ocr_mode() 切换）
+OCR_MODE = {
+    "device": "cpu",        # "cpu" 或 "gpu"
+    "model_type": "mobile", # "mobile" 或 "server"
+}
+
+# 模型名称映射
+OCR_MODEL_NAMES = {
+    "mobile": {
+        "det": "PP-OCRv5_mobile_det",
+        "rec": "PP-OCRv5_mobile_rec",
+    },
+    "server": {
+        "det": "PP-OCRv5_server_det",
+        "rec": "PP-OCRv5_server_rec",
+    },
+}
+
+
+def set_ocr_mode(device: str = "cpu", model_type: str = "mobile"):
+    """切换 OCR 运行模式。切换后需调用 clear_ocr_cache() 重建实例。"""
+    OCR_MODE["device"] = device.lower()
+    OCR_MODE["model_type"] = model_type.lower()
+
+
+def get_ocr_model_names() -> tuple[str, str]:
+    """返回当前模式下的 (det_model, rec_model)。"""
+    mt = OCR_MODE["model_type"]
+    names = OCR_MODEL_NAMES.get(mt, OCR_MODEL_NAMES["mobile"])
+    return names["det"], names["rec"]
 
 # ── 关键词锚定检测配置 ─────────────────────────────────────────
 KEYWORD_ANCHORS = {

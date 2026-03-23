@@ -48,7 +48,7 @@ OUT_DIR = BASE_DIR / "diagnostic_output"
 OUT_DIR.mkdir(exist_ok=True)
 
 # 指定测试文件
-test_file = Path(r"C:\Users\HYMOD\WPSDrive\1435755195\WPS云盘\客户\上海，三菱电机\TEST_undo\YA147C070P3335_0-脱敏.tif")
+test_file = Path(r"c:\Users\huang\Downloads\Downloads\mitsu\TIF_Undo\YA057C857_0-脱敏.tif")
 if not test_file.exists():
     logger.error(f"未找到测试文件: {test_file}")
     sys.exit(1)
@@ -249,7 +249,7 @@ if red_bbox:
             logger.info(f"row_ys (uniform后): {row_ys_uniform}")
 
         # ── 3d. 青色框生成 ──
-        cyan_boxes = detect_cyan_boxes(
+        cyan_boxes, _ = detect_cyan_boxes(
             img_array, red_bbox, row_ys,
             pattern=red_pattern, prefixes=prefixes,
         )

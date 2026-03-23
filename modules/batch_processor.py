@@ -13,7 +13,7 @@ from tqdm import tqdm
 from config import SUPPORTED_EXTENSIONS
 from modules.file_ingestion import load_file
 from modules.pdf_vector_handler import is_vector_pdf, replace_text_in_pdf
-from modules.region_detector import detect_all_regions
+from modules.region_detector import detect_all_regions, _enhance_vertical_lines
 from modules.text_replacer import replace_in_all_regions
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,8 @@ def process_single_file(
         regions = regions_override
         logger.info(f"使用预检测区域: {[k for k in regions if not k.startswith('_')]}")
     else:
-        regions = detect_all_regions(img_array, region_config, prefixes=prefixes)
+        enhanced = _enhance_vertical_lines(img_array)
+        regions = detect_all_regions(enhanced, region_config, prefixes=prefixes)
 
     # 如果检测时旋转了图像，将 img_array 也旋转（后续操作都在旋转后的图像上）
     rot_code = regions.get("_metadata", {}).get("rotation")

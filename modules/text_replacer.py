@@ -9,27 +9,56 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from config import Y_PATTERN, FONT_PATH, OCR_LANG_EN, OCR_LANG_CH, DEFAULT_REGIONS, make_pattern, DEFAULT_PREFIXES
+from config import Y_PATTERN, FONT_PATH, OCR_LANG_EN, OCR_LANG_CH, DEFAULT_REGIONS, make_pattern, DEFAULT_PREFIXES, OCR_MODE, get_ocr_model_names
 from modules.region_detector import BBox, _pct_to_px, _detect_horizontal_lines, _detect_horizontal_lines_adaptive, _ocr_region
 
 logger = logging.getLogger(__name__)
 
-# ── OCR 引擎（延迟初始化，避免重复创建）──────────────────────
+# ── OCR 引擎（线程本地缓存，支持多线程并行）──────────────────────
 
-_ocr_cache = {}
+import threading
+import gc
+_ocr_local = threading.local()
+
+
+def clear_ocr_cache():
+    """清除所有线程的 OCR 缓存并释放内存。
+    在每次新任务开始时调用，避免旧实例残留导致问题。"""
+    if hasattr(_ocr_local, 'cache'):
+        _ocr_local.cache.clear()
+    gc.collect()
+    logger.info("OCR 缓存已清除")
 
 
 def _get_ocr(lang: str = "en"):
-    """获取 PaddleOCR v5 实例（按语言缓存）。"""
-    if lang not in _ocr_cache:
+    """获取当前线程的 PaddleOCR v5 实例（线程本地缓存）。
+
+    每个线程独立创建并缓存 PaddleOCR 实例，避免跨线程共享 predictor。
+    根据 config.OCR_MODE 选择 GPU/CPU 和 mobile/server 模型。
+    """
+    det_model, rec_model = get_ocr_model_names()
+    use_gpu = OCR_MODE["device"] == "gpu"
+    # 缓存 key 包含模式信息，模式切换后自动重建
+    key = f"{lang}_{OCR_MODE['device']}_{OCR_MODE['model_type']}"
+    if not hasattr(_ocr_local, 'cache'):
+        _ocr_local.cache = {}
+    if key not in _ocr_local.cache:
         from paddleocr import PaddleOCR
-        _ocr_cache[lang] = PaddleOCR(
+        kwargs = dict(
             lang=lang,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=False,
+            text_detection_model_name=det_model,
+            text_recognition_model_name=rec_model,
+            text_det_unclip_ratio=1.6,
         )
-    return _ocr_cache[lang]
+        if use_gpu:
+            kwargs["device"] = "gpu:0"
+        logger.info(f"创建 OCR 实例: lang={lang}, device={OCR_MODE['device']}, "
+                    f"model={OCR_MODE['model_type']} ({det_model})")
+        _ocr_local.cache[key] = PaddleOCR(**kwargs)
+    return _ocr_local.cache[key]
 
 
 # ── OCR 结果解析 ──────────────────────────────────────────────
@@ -865,24 +894,87 @@ def replace_y_in_region_pixel(
     row_ys: list[int] = None,
     pattern: str = None,
     prefixes: list[str] = None,
+    cyan_box_data: list[dict] = None,
+    original: np.ndarray = None,
 ) -> tuple[np.ndarray, list]:
     """
     在指定区域内 OCR 识别并像素级替换（前缀加H）。
 
-    两种模式：
+    三种模式：
+    - 数据驱动模式 (cyan_box_data 不为空): 使用预检测的 OCR 结果直接替换
     - 网格对齐模式 (use_grid_alignment=True): 逐格扫描红框内单元格
     - 直接模式: 整体 OCR 后按文字 bbox 替换
 
+    original: 原始未修改图像（数据驱动模式下用于删除线恢复）。
+              传入时跳过内部copy，直接操作 image（调用者须保证 image 已是副本）。
+
     返回 (修改后的全图, [(old_text, new_text), ...], cyan_boxes)
     """
-    modified = image.copy()
+    # 数据驱动模式 + 提供 original → 跳过copy（调用者已copy）
+    if original is not None and use_grid_alignment and cyan_box_data:
+        modified = image
+        orig_ref = original
+    else:
+        modified = image.copy()
+        orig_ref = image
     replacements = []
     cyan_boxes = []
     prefixes = prefixes or DEFAULT_PREFIXES
     pat = re.compile(pattern if pattern else make_pattern(prefixes))
     FILL_MARGIN = 2
 
-    if use_grid_alignment and row_ys and len(row_ys) >= 2:
+    if use_grid_alignment and cyan_box_data:
+        # ── 数据驱动模式：批量操作，减少 numpy↔PIL 转换 ──
+        text_paste_data = []    # (text_img, paste_x, paste_y)
+        strike_restore_data = []  # (mask, gx, gy_fill)
+
+        for item in cyan_box_data:
+            cell_bbox = item["bbox"]
+            old_text = item["text"]
+            has_strike = item["has_strikethrough"]
+            gx, gy_fill = cell_bbox.x, cell_bbox.y
+            safe_w, fill_h = cell_bbox.w, cell_bbox.h
+            new_text = "H" + old_text
+
+            # 删除线：从原始图检测掩膜
+            if has_strike:
+                cell_gray = cv2.cvtColor(
+                    orig_ref[gy_fill:gy_fill + fill_h, gx:gx + safe_w],
+                    cv2.COLOR_RGB2GRAY,
+                )
+                strike_mask = _detect_strikethrough_mask(cell_gray)
+                if strike_mask is not None and np.any(strike_mask):
+                    strike_restore_data.append((strike_mask, gx, gy_fill))
+
+            # 白填充 (numpy)
+            cv2.rectangle(modified,
+                (gx + FILL_MARGIN, gy_fill + FILL_MARGIN),
+                (gx + safe_w - FILL_MARGIN, gy_fill + fill_h - FILL_MARGIN),
+                (255, 255, 255), -1)
+
+            # 渲染新文字（收集，稍后批量粘贴）
+            render_w = max(safe_w - 2 * FILL_MARGIN, 6)
+            render_h = max(fill_h - 2 * FILL_MARGIN, 6)
+            text_img = _render_text_distributed(new_text, render_w, render_h)
+            text_paste_data.append((text_img, gx + FILL_MARGIN, gy_fill + FILL_MARGIN))
+
+            cyan_boxes.append(cell_bbox)
+            replacements.append((old_text, new_text))
+            logger.info(f"  替换(预检测): {old_text} → {new_text}")
+
+        # 批量粘贴文字（1次 numpy→PIL→numpy，而非 N 次）
+        if text_paste_data:
+            pil_modified = Image.fromarray(modified)
+            for text_img, px, py in text_paste_data:
+                pil_modified.paste(text_img, (px, py), text_img)
+            modified = np.array(pil_modified)
+
+        # 批量恢复删除线（在文字之上）
+        for strike_mask, gx, gy_fill in strike_restore_data:
+            _restore_protected_pixels(modified, orig_ref, strike_mask, gx, gy_fill)
+            logger.info(f"  删除线已恢复: ({gx}, {gy_fill})")
+
+    elif use_grid_alignment and row_ys and len(row_ys) >= 2:
         # ── 网格对齐模式：逐格扫描 ──
         if row_ys is None:
             roi_gray = cv2.cvtColor(bbox.crop(image), cv2.COLOR_RGB2GRAY)
@@ -1125,71 +1217,263 @@ def _ocr_cell(cell_roi: np.ndarray, ocr, remove_strikethrough: bool = True) -> t
     return _parse_ocr_results(result), has_strikethrough
 
 
+# ── 投影法 + 网格分类 辅助函数 ──────────────────────────────────
+
+
+def _preprocess_for_table(gray: np.ndarray) -> np.ndarray:
+    """自适应二值化 + 去噪 + 形态学标准化线厚。"""
+    binary = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 11, 2
+    )
+    binary = cv2.medianBlur(binary, 3)
+    kernel = np.ones((3, 3), np.uint8)
+    binary = cv2.dilate(binary, kernel, iterations=1)
+    binary = cv2.erode(binary, kernel, iterations=1)
+    return binary
+
+
+def _detect_all_hlines_projection(binary: np.ndarray, min_line_ratio: float = 0.8) -> list[int]:
+    """水平投影法 — 每行白像素占比超过阈值 → 聚类取中心。"""
+    row_sum = np.sum(binary, axis=1) / 255.0
+    threshold = min_line_ratio * binary.shape[1]
+    line_positions = np.where(row_sum > threshold)[0]
+
+    if len(line_positions) == 0:
+        return []
+
+    lines = []
+    current = [int(line_positions[0])]
+    for y in line_positions[1:]:
+        if y - current[-1] < 10:
+            current.append(int(y))
+        else:
+            lines.append(int(np.mean(current)))
+            current = [int(y)]
+    lines.append(int(np.mean(current)))
+    return sorted(lines)
+
+
+def _classify_lines_by_grid(all_lines: list[int], cell_height: int,
+                            tolerance: int = 3) -> tuple[list[int], list[int]]:
+    """网格步进分类：从第一条线开始，期望下一条行线在 +cell_height ±tolerance。
+    匹配到的是行线，其余是删除线。
+
+    Returns: (table_lines, strike_lines)
+    """
+    if not all_lines:
+        return [], []
+
+    table_lines = [all_lines[0]]
+    used = {0}
+    cur = 0
+
+    while True:
+        expected = all_lines[cur] + cell_height
+        best_idx = None
+        best_dist = float('inf')
+        for j in range(cur + 1, len(all_lines)):
+            d = abs(all_lines[j] - expected)
+            if d < best_dist:
+                best_idx = j
+                best_dist = d
+            if all_lines[j] > expected + tolerance:
+                break
+
+        if best_idx is not None and best_dist <= tolerance:
+            table_lines.append(all_lines[best_idx])
+            used.add(best_idx)
+            cur = best_idx
+        else:
+            break
+
+    strike_lines = [all_lines[i] for i in range(len(all_lines)) if i not in used]
+    return sorted(table_lines), sorted(strike_lines)
+
+
+def _make_strike_mask(chunk_gray: np.ndarray, strike_ys_local: list[int],
+                      band_half: int = 6) -> np.ndarray:
+    """在已知删除线 y 坐标附近提取水平墨迹像素作为 inpaint mask。"""
+    h, w = chunk_gray.shape
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if not strike_ys_local:
+        return mask
+
+    _, thresh = cv2.threshold(chunk_gray, 0, 255,
+                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    kw = max(int(w * 0.25), 15)
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kw, 1))
+
+    for sy in strike_ys_local:
+        y_top = max(0, sy - band_half)
+        y_bot = min(h, sy + band_half + 1)
+        band = thresh[y_top:y_bot, :]
+        h_only = cv2.morphologyEx(band, cv2.MORPH_OPEN, h_kernel)
+        mask[y_top:y_bot, :] = h_only
+
+    return mask
+
+
 def detect_cyan_boxes(
     image: np.ndarray, bbox: BBox, row_ys: list[int],
     pattern: str = None, prefixes: list[str] = None,
 ) -> list:
-    """逐格扫描红框内单元格，匹配首字母则生成青色框。
+    """分片 OCR 扫描红框内单元格，匹配首字母则生成青色框。
 
     流程：
-    1. 从 row_ys 确定统一单元格高度（前5对间距投票）
-    2. 逐个裁剪单元格 → 独立OCR → 检查首字母是否匹配
-    3. 匹配则生成青框 (宽=红框宽, 高=统一单元格高度)
+    1. 投影法检测红框内所有水平线
+    2. 网格步进区分行线 vs 删除线
+    3. 按行线分片（每10格一片，重叠2格）
+    4. 删除线 inpaint 修复后整片 OCR
+    5. 结果按 y 坐标匹配单元格，首字母匹配则生成青框
 
     返回 [BBox, ...] — 每个青色框对应一个匹配编号的单元格。
     """
-    uniform_cell_h = _determine_uniform_cell_height(row_ys)
-    if not uniform_cell_h:
-        logger.warning("  无法确定单元格高度, 跳过青框生成")
+    CHUNK_SIZE = 10
+    OVERLAP_ROWS = 2
+    GRID_TOLERANCE = 3
+
+    # ── 投影法检测所有水平线 ──
+    box_roi = image[bbox.y:bbox.y2, bbox.x:bbox.x2]
+    box_gray = cv2.cvtColor(box_roi, cv2.COLOR_RGB2GRAY)
+    box_h, box_w = box_gray.shape[:2]
+
+    binary = _preprocess_for_table(box_gray)
+    all_lines = _detect_all_hlines_projection(binary, min_line_ratio=0.8)
+
+    if len(all_lines) < 2:
+        logger.warning("  投影法检测行线不足，跳过青框生成")
         return []
 
-    # ── 填充大间隙（与 replace_y_in_region_pixel 保持一致）──
-    filled_row_ys = []
-    gap_threshold = uniform_cell_h * 1.8
-    for i, y in enumerate(row_ys):
-        filled_row_ys.append(y)
-        next_y = row_ys[i + 1] if i + 1 < len(row_ys) else bbox.h
-        gap = next_y - y
-        if gap > gap_threshold:
-            n_fill = round(gap / uniform_cell_h) - 1
-            if n_fill > 0:
-                step = gap / (n_fill + 1)
-                for k in range(1, n_fill + 1):
-                    filled_row_ys.append(int(y + step * k))
-    filled_row_ys = sorted(set(filled_row_ys))
+    # ── 确定单元格高度（>50px 间距的众数）──
+    gaps = [all_lines[i + 1] - all_lines[i] for i in range(len(all_lines) - 1)]
+    large_gaps = [g for g in gaps if g > 50]
+    if not large_gaps:
+        logger.warning("  无有效大间距，跳过青框生成")
+        return []
+    rounded = [round(g / 5) * 5 for g in large_gaps]
+    cell_height = Counter(rounded).most_common(1)[0][0]
 
-    logger.info(f"  统一单元格高度: {uniform_cell_h}px, 原始{len(row_ys)}条 → 填充后{len(filled_row_ys)}条")
+    # ── 网格步进分类 ──
+    table_lines, strike_lines = _classify_lines_by_grid(
+        all_lines, cell_height, tolerance=GRID_TOLERANCE
+    )
+    logger.info(f"  投影法: {len(all_lines)} 条线 → 行线 {len(table_lines)}, "
+                f"删除线 {len(strike_lines)}, cell_h={cell_height}px")
 
+    # ── 分片（仅用行线，带重叠）──
+    chunk_step = max(CHUNK_SIZE - OVERLAP_ROWS, 1)
+    chunks = []
+    n_tl = len(table_lines)
+    for i in range(0, n_tl, chunk_step):
+        end_idx = i + CHUNK_SIZE
+        chunk_top = table_lines[i]
+        if end_idx < n_tl:
+            chunk_bot = table_lines[end_idx]
+        else:
+            chunk_bot = min(table_lines[-1] + cell_height, box_h)
+        lines_in_chunk = table_lines[i:min(end_idx, n_tl)]
+        chunks.append((chunk_top, chunk_bot, lines_in_chunk))
+        if end_idx >= n_tl:
+            break
+
+    logger.info(f"  分片: {len(chunks)} 片 (每片{CHUNK_SIZE}行, 重叠{OVERLAP_ROWS}行)")
+
+    # ── 每片：删除线 mask + inpaint ──
+    chunk_strike_masks = {}
+    for ci, (chunk_top, chunk_bot, _chunk_tbl) in enumerate(chunks):
+        local_strikes = [sy - chunk_top for sy in strike_lines
+                         if chunk_top < sy < chunk_bot]
+        if not local_strikes:
+            continue
+        chunk_roi = box_roi[chunk_top:chunk_bot, :]
+        chunk_gray = cv2.cvtColor(chunk_roi, cv2.COLOR_RGB2GRAY)
+        strike_mask = _make_strike_mask(chunk_gray, local_strikes, band_half=6)
+        if np.any(strike_mask):
+            chunk_strike_masks[ci] = strike_mask
+            logger.info(f"    片[{ci}] 删除线: {len(local_strikes)} 条 @ {local_strikes}")
+
+    # ── 分片 OCR + 青框生成 ──
     prefixes = prefixes or DEFAULT_PREFIXES
     prefix_set = {p.upper() for p in prefixes}
     ocr = _get_ocr(OCR_LANG_EN)
 
     cyan_boxes = []
+    cyan_box_data = []
+    matched_cell_ys = set()
 
-    for cell_top in filled_row_ys:
-        cell_bottom = cell_top + uniform_cell_h
-        if cell_bottom > bbox.h:
-            break
+    for ci, (chunk_top, chunk_bot, chunk_tbl_lines) in enumerate(chunks):
+        chunk_roi = box_roi[chunk_top:chunk_bot, :]
+        ch, cw = chunk_roi.shape[:2]
+        if ch < 3 or cw < 3:
+            continue
 
-        # 裁剪单元格（全图坐标）
-        cell_roi = image[
-            bbox.y + cell_top: bbox.y + cell_bottom,
-            bbox.x: bbox.x2,
-        ]
+        # 删除线 inpaint
+        if ci in chunk_strike_masks:
+            chunk_bgr = cv2.cvtColor(chunk_roi, cv2.COLOR_RGB2BGR)
+            inpainted_bgr = cv2.inpaint(chunk_bgr, chunk_strike_masks[ci],
+                                         inpaintRadius=2, flags=cv2.INPAINT_TELEA)
+            chunk_for_ocr = cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
+        else:
+            chunk_for_ocr = chunk_roi
 
-        # 独立 OCR 该单元格（内部自动检测并去除删除线）
-        items, _has_strike = _ocr_cell(cell_roi, ocr)
+        # 缩放
+        min_dim = min(cw, ch)
+        max_dim = max(cw, ch)
+        if min_dim < 80:
+            sf = 5.0
+        elif min_dim < 200:
+            sf = 3.0
+        else:
+            sf = 1.0
+        if max_dim * sf > 3500:
+            sf = max(3500.0 / max_dim, 1.0)
 
-        # 红框内只需首字母匹配前缀即可
-        for _poly, text, _score in items:
+        if sf > 1.0:
+            scaled = cv2.resize(chunk_for_ocr, (int(cw * sf), int(ch * sf)),
+                                interpolation=cv2.INTER_CUBIC)
+        else:
+            scaled = chunk_for_ocr
+            sf = 1.0
+
+        # OCR
+        result = ocr.predict(scaled)
+        items = _parse_ocr_results(result)
+
+        # 坐标映射 + 匹配
+        for poly, text, score in items:
+            if poly is None or len(poly) < 4:
+                continue
             text_ns = text.replace(" ", "").strip()
-            if text_ns and text_ns[0].upper() in prefix_set:
-                cyan_boxes.append(BBox(bbox.x, bbox.y + cell_top, bbox.w, uniform_cell_h))
-                logger.info(f"  青框: cell_top={cell_top}, 匹配='{text_ns}'")
-                break
+            if not text_ns or text_ns[0].upper() not in prefix_set:
+                continue
 
-    logger.info(f"  逐格扫描: {len(filled_row_ys)} 格, {len(cyan_boxes)} 个青框")
-    return cyan_boxes
+            ys_poly = [pt[1] / sf for pt in poly]
+            text_cy = sum(ys_poly) / len(ys_poly)
+            abs_y = chunk_top + text_cy
+
+            for tl in table_lines:
+                cell_bot = tl + cell_height
+                if tl <= abs_y < cell_bot:
+                    if tl not in matched_cell_ys:
+                        matched_cell_ys.add(tl)
+                        cyan_boxes.append(BBox(bbox.x, bbox.y + tl,
+                                               bbox.w, cell_height))
+                        cell_has_strike = any(tl < sy < tl + cell_height
+                                              for sy in strike_lines)
+                        cyan_box_data.append({
+                            "bbox": BBox(bbox.x, bbox.y + tl,
+                                         bbox.w, cell_height),
+                            "text": text_ns,
+                            "has_strikethrough": cell_has_strike,
+                            "cell_top": tl,
+                        })
+                        logger.info(f"  青框: cell_top={tl}, 匹配='{text_ns}'")
+                    break
+
+    logger.info(f"  分片OCR: {len(chunks)} 片, {len(cyan_boxes)} 个青框, "
+                f"删除线 {len(strike_lines)} 条")
+    return cyan_boxes, cyan_box_data
 
 
 # ── 公共 OCR 辅助 + 保存后验证 ────────────────────────────────
@@ -1320,14 +1604,14 @@ def replace_in_all_regions(
 
     filename_y = _extract_from_filename(filename)
 
-    # 文本验证：9位、无空格、首字母在 prefixes 中
+    # 文本验证：首字母+至少4位、无空格、首字母在 prefixes 中
     def _valid_prefix(s):
         if not s:
             return None
         s = s.upper().replace(" ", "")
-        if len(s) != 9:
+        if len(s) < 5:
             return None
-        if s[0] in prefixes_upper and re.match(r'^[A-Z][A-Z0-9]{8}$', s):
+        if s[0] in prefixes_upper and re.match(r'^[A-Z][A-Z0-9]{4,}$', s):
             return s
         return None
 
@@ -1343,17 +1627,30 @@ def replace_in_all_regions(
 
         if region_name == "material_code_column":
             metadata = regions.get("_metadata", {})
-            table_search_bbox = metadata.get("table_search_area")
-            row_ys = detect_row_ys_for_red_box(
-                modified, bbox, table_search_bbox=table_search_bbox)
-            # 红框使用宽松匹配：Y + 8位字母数字或连字符
-            # 红框使用宽松匹配：前缀 + 8位字母数字或连字符
-            red_pattern = rf"\b[{p_chars}][A-Z0-9\-]{{8}}\b" if len(p_chars) > 1 else rf"\b{p_chars}[A-Z0-9\-]{{8}}\b"
-            modified, repls, cyan_boxes = replace_y_in_region_pixel(
-                modified, bbox, lang=OCR_LANG_EN,
-                use_grid_alignment=True, row_ys=row_ys,
-                pattern=red_pattern, prefixes=prefixes,
-            )
+            cyan_box_data = metadata.get("cyan_box_data")  # 从检测阶段获取
+
+            if cyan_box_data:
+                # 有预检测数据，直接使用，不需要重新检测行线和 OCR
+                red_pattern = rf"\b[{p_chars}][A-Z0-9\-]{{8}}\b" if len(p_chars) > 1 else rf"\b{p_chars}[A-Z0-9\-]{{8}}\b"
+                modified, repls, cyan_boxes = replace_y_in_region_pixel(
+                    modified, bbox, lang=OCR_LANG_EN,
+                    use_grid_alignment=True,
+                    pattern=red_pattern, prefixes=prefixes,
+                    cyan_box_data=cyan_box_data,
+                    original=image,
+                )
+            else:
+                # 无预检测数据（CLI模式等），走原有 OCR 逻辑
+                table_search_bbox = metadata.get("table_search_area")
+                row_ys = detect_row_ys_for_red_box(
+                    modified, bbox, table_search_bbox=table_search_bbox)
+                # 红框使用宽松匹配：前缀 + 8位字母数字或连字符
+                red_pattern = rf"\b[{p_chars}][A-Z0-9\-]{{8}}\b" if len(p_chars) > 1 else rf"\b{p_chars}[A-Z0-9\-]{{8}}\b"
+                modified, repls, cyan_boxes = replace_y_in_region_pixel(
+                    modified, bbox, lang=OCR_LANG_EN,
+                    use_grid_alignment=True, row_ys=row_ys,
+                    pattern=red_pattern, prefixes=prefixes,
+                )
 
             # 存储青色框供 debug 绘图使用
             regions.setdefault("_metadata", {})["cyan_boxes"] = cyan_boxes

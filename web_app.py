@@ -8,10 +8,15 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["FLAGS_use_mkldnn"] = "0"
-os.environ["FLAGS_enable_pir_api"] = "0"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
+os.environ["no_proxy"] = "localhost,127.0.0.1,0.0.0.0"
+
+# 注意：不设置 FLAGS_use_mkldnn / FLAGS_enable_pir_api
+# 这两个 CPU 加速 flag 一旦设置，会导致 GPU 静态推理引擎卡死（GPU stream nullptr），
+# 且 Paddle 内部状态在进程生命周期内不可逆，无法在运行时清除。
+# 不设置它们 CPU 模式仍可正常工作，仅损失少量 MKLDNN 加速。
 
 logging.getLogger("ppocr").setLevel(logging.WARNING)
 logging.basicConfig(
@@ -26,11 +31,11 @@ import cv2
 from PIL import Image
 import numpy as np
 
-from config import SUPPORTED_EXTENSIONS, DEFAULT_PREFIXES
+from config import SUPPORTED_EXTENSIONS, DEFAULT_PREFIXES, set_ocr_mode, OCR_MODE
 from modules.batch_processor import process_single_file
 from modules.file_ingestion import load_file
-from modules.region_detector import detect_all_regions, draw_regions_debug, _detect_horizontal_lines, _detect_horizontal_lines_adaptive, BBox
-from modules.text_replacer import detect_cyan_boxes, replace_in_all_regions, detect_row_ys_for_red_box
+from modules.region_detector import detect_all_regions, draw_regions_debug, _detect_horizontal_lines, _detect_horizontal_lines_adaptive, _enhance_vertical_lines, BBox
+from modules.text_replacer import detect_cyan_boxes, replace_in_all_regions, detect_row_ys_for_red_box, clear_ocr_cache
 
 BASE_DIR = Path(__file__).parent
 RESULT_DIR = BASE_DIR / "output"
@@ -40,26 +45,30 @@ RESULT_DIR.mkdir(exist_ok=True)
 _detect_cache: dict[str, tuple[np.ndarray, dict]] = {}
 
 
-def warmup_ui():
-    """Web界面预热函数，使用真实TIF文件"""
+def load_model_ui(device_choice, model_choice):
+    """手动加载/切换 OCR 模型。"""
+    import time
     try:
-        tif_dir = BASE_DIR / "TIF_Undo"
-        tif_files = list(tif_dir.glob("*.tif"))
-        if not tif_files:
-            return "预热失败：未找到TIF文件"
+        device = "gpu" if device_choice == "GPU" else "cpu"
+        model_type = "server" if model_choice == "Server (高精度)" else "mobile"
 
-        logger.info(f"使用 {tif_files[0].name} 预热模型...")
+        # 切换模式 + 清除旧缓存
+        set_ocr_mode(device=device, model_type=model_type)
+        clear_ocr_cache()
+
+        logger.info(f"加载模型: device={device}, model={model_type}")
+        t0 = time.time()
+
         from modules.text_replacer import _get_ocr
         _get_ocr("en")
         _get_ocr("ch")
 
-        temp_out = BASE_DIR / "output" / "warmup_temp"
-        temp_out.mkdir(exist_ok=True, parents=True)
-        process_single_file(str(tif_files[0]), str(temp_out), generate_debug=False)
-        shutil.rmtree(temp_out, ignore_errors=True)
-        return "预热完成！"
+        elapsed = time.time() - t0
+        mode_str = f"{device.upper()} + {model_type}"
+        return f"模型加载完成: {mode_str} ({elapsed:.1f}s)"
     except Exception as e:
-        return f"预热失败：{e}"
+        logger.error(f"模型加载失败: {e}", exc_info=True)
+        return f"模型加载失败: {e}"
 
 
 # ── Step 1: 检测区域预览 ──
@@ -68,6 +77,7 @@ def detect_regions(files, prefixes):
     """检测所有上传文件的区域，返回带彩色框的预览图。"""
     global _detect_cache
     _detect_cache.clear()
+    clear_ocr_cache()  # 清除旧 OCR 实例，避免残留状态
 
     if not files:
         gr.Warning("请先上传文件")
@@ -88,33 +98,40 @@ def detect_regions(files, prefixes):
 
         try:
             img_array, _ = load_file(f)
-            regions = detect_all_regions(img_array, prefixes=prefixes)
 
-            # 如果检测时旋转了图像，同步旋转 img_array
+            # 竖线增强预处理：加粗细竖线，帮助 OCR 正确分段。
+            # 检测用增强图，替换在原图上执行。
+            enhanced = _enhance_vertical_lines(img_array)
+
+            regions = detect_all_regions(enhanced, prefixes=prefixes)
+
+            # 如果检测时旋转了图像，同步旋转原图和增强图
             rot_code = regions.get("_metadata", {}).get("rotation")
             if rot_code is not None:
                 img_array = cv2.rotate(img_array, rot_code)
+                enhanced = cv2.rotate(enhanced, rot_code)
 
-            # 生成青色框（红框内OCR识别匹配编号位置）
+            # 生成青色框（红框内OCR识别匹配编号位置），用增强图做 OCR
             red_bbox = regions.get("material_code_column")
             metadata = regions.get("_metadata", {})
             if red_bbox:
                 table_search_bbox = metadata.get("table_search_area")
                 row_ys = detect_row_ys_for_red_box(
-                    img_array, red_bbox, table_search_bbox=table_search_bbox)
+                    enhanced, red_bbox, table_search_bbox=table_search_bbox)
                 p_chars = "".join(p.upper() for p in prefixes)
                 red_pattern = rf"\b[{p_chars}][A-Z0-9\-]{{8}}\b" if len(p_chars) > 1 else rf"\b{p_chars}[A-Z0-9\-]{{8}}\b"
-                cyan_boxes = detect_cyan_boxes(
-                    img_array, red_bbox, row_ys,
+                cyan_boxes, cyan_box_data = detect_cyan_boxes(
+                    enhanced, red_bbox, row_ys,
                     pattern=red_pattern, prefixes=prefixes,
                 )
                 metadata["cyan_boxes"] = cyan_boxes
+                metadata["cyan_box_data"] = cyan_box_data
                 logger.info(f"  生成 {len(cyan_boxes)} 个青色框")
 
-            # 缓存检测结果供替换阶段使用
+            # 缓存原图 + 检测结果供替换阶段使用（替换在原图上执行）
             _detect_cache[fname] = (img_array, regions)
 
-            # 彩色框全图（仅全图，不裁剪搜索区域）
+            # 预览用原图画框
             debug_img = draw_regions_debug(img_array, regions)
             preview_images.append((
                 Image.fromarray(debug_img),
@@ -169,9 +186,16 @@ def run_replace(files, prefixes):
                 modified, replacements = replace_in_all_regions(
                     img_array, regions, filename=basename, prefixes=prefixes,
                 )
-                output_path = str(out_dir / (basename + "_modified.jpg"))
-                Image.fromarray(modified).save(output_path, quality=95)
                 count = len(replacements)
+                # 直接从 numpy 转 PIL，避免磁盘写读循环
+                mod_img = Image.fromarray(modified)
+                output_path = str(out_dir / (basename + "_modified.jpg"))
+                mod_img.save(output_path, quality=95)
+                total_replacements += count
+                result_images.append((
+                    mod_img,
+                    f"{fname} ({count} 处替换)"
+                ))
             else:
                 # 无缓存，回退到完整流程
                 logger.warning(f"  无检测缓存，回退到完整流程: {fname}")
@@ -181,14 +205,13 @@ def run_replace(files, prefixes):
                 output_path = result.get("output_path", "")
                 replacements = result.get("replacements", [])
                 count = result.get("total", 0)
-
-            if output_path and os.path.exists(output_path):
-                mod_img = Image.open(output_path).convert("RGB")
-                total_replacements += count
-                result_images.append((
-                    mod_img,
-                    f"{fname} ({count} 处替换)"
-                ))
+                if output_path and os.path.exists(output_path):
+                    mod_img = Image.open(output_path).convert("RGB")
+                    total_replacements += count
+                    result_images.append((
+                        mod_img,
+                        f"{fname} ({count} 处替换)"
+                    ))
 
             logger.info(f"  OK {fname}: {count} 处替换")
 
@@ -202,13 +225,11 @@ def run_replace(files, prefixes):
 
 # ── 构建界面 ──
 
-with gr.Blocks(
-    title="图纸编号替换系统",
-    theme=gr.themes.Soft(
-        primary_hue="indigo",
-        neutral_hue="slate",
-    ),
-    css="""
+_APP_THEME = gr.themes.Soft(
+    primary_hue="indigo",
+    neutral_hue="slate",
+)
+_APP_CSS = """
     .main-title { text-align: center; margin-bottom: 0.2em; }
     .gradio-container { max-width: 2000px !important; }
     footer { display: none !important; }
@@ -241,8 +262,9 @@ with gr.Blocks(
 
     /* Tab样式优化 */
     .tab-nav button { font-size: 15px !important; font-weight: 600 !important; }
-    """
-) as demo:
+"""
+
+with gr.Blocks(title="图纸编号替换系统") as demo:
 
     gr.Markdown("# 图纸编号替换系统", elem_classes="main-title")
 
@@ -272,9 +294,25 @@ with gr.Blocks(
                 interactive=False,
                 lines=1,
             )
-            with gr.Accordion("高级选项", open=False):
-                warmup_btn = gr.Button("预热模型", variant="secondary", size="sm")
-                warmup_btn.click(fn=warmup_ui, inputs=[], outputs=[status_text])
+            with gr.Accordion("模型设置", open=True):
+                device_radio = gr.Radio(
+                    choices=["CPU", "GPU"],
+                    value="CPU",
+                    label="运算设备",
+                    info="GPU 需要 paddlepaddle-gpu + CUDA",
+                )
+                model_radio = gr.Radio(
+                    choices=["Mobile (快速)", "Server (高精度)"],
+                    value="Mobile (快速)",
+                    label="模型类型",
+                    info="Server 精度更高但更慢",
+                )
+                load_model_btn = gr.Button("加载模型", variant="secondary", size="sm")
+                load_model_btn.click(
+                    fn=load_model_ui,
+                    inputs=[device_radio, model_radio],
+                    outputs=[status_text],
+                )
 
         # ── 右侧图片查看区 ──
         with gr.Column(scale=4):
@@ -286,6 +324,7 @@ with gr.Blocks(
                         height=780,
                         object_fit="contain",
                         preview=True,
+                        format="jpeg",
                     )
                 with gr.Tab("替换结果", id="tab_result"):
                     result_gallery = gr.Gallery(
@@ -293,6 +332,7 @@ with gr.Blocks(
                         columns=1,
                         height=780,
                         object_fit="contain",
+                        format="jpeg",
                         preview=True,
                     )
 
@@ -390,4 +430,4 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     logger.info("启动 Web 服务: http://localhost:7860")
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860, theme=_APP_THEME, css=_APP_CSS)

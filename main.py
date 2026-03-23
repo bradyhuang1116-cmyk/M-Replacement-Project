@@ -9,7 +9,7 @@ import logging
 # 确保项目根目录在 Python 路径中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-os.environ["FLAGS_use_mkldnn"] = "0"
+os.environ["FLAGS_use_mkldnn"] = "1"
 os.environ["FLAGS_enable_pir_api"] = "0"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
@@ -29,7 +29,7 @@ def setup_logging(verbose: bool = False):
 def cmd_detect(args):
     """Phase 1: 检测区域并保存供确认"""
     from modules.file_ingestion import load_file
-    from modules.region_detector import detect_all_regions, draw_regions_debug, BBox
+    from modules.region_detector import detect_all_regions, draw_regions_debug, _enhance_vertical_lines, BBox
     from PIL import Image
 
     img_array, metadata = load_file(args.file)
@@ -37,7 +37,8 @@ def cmd_detect(args):
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    regions = detect_all_regions(img_array)
+    enhanced = _enhance_vertical_lines(img_array)
+    regions = detect_all_regions(enhanced)
 
     # 保存 debug 可视化图
     debug_img = draw_regions_debug(img_array, regions)
@@ -152,13 +153,14 @@ def cmd_batch(args):
 def cmd_debug_regions(args):
     """调试：可视化区域检测结果（旧版兼容）"""
     from modules.file_ingestion import load_file
-    from modules.region_detector import detect_all_regions, draw_regions_debug
+    from modules.region_detector import detect_all_regions, draw_regions_debug, _enhance_vertical_lines
     from PIL import Image
 
     img_array, metadata = load_file(args.file)
     print(f"加载: {img_array.shape[1]}x{img_array.shape[0]}, {metadata['format']}")
 
-    regions = detect_all_regions(img_array)
+    enhanced = _enhance_vertical_lines(img_array)
+    regions = detect_all_regions(enhanced)
     for name, bbox in regions.items():
         if name.startswith("_"):
             continue
