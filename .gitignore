@@ -11,6 +11,7 @@ env/
 # 输出文件夹
 output/
 results/
+diagnostic_output/
 
 # 临时文件
 *.log
