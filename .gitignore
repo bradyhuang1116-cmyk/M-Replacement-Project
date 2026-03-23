@@ -29,11 +29,9 @@ TIF_Undo/
 *.pdf
 debug_strike/
 
-# 字体文件
-fonts/*.ttf
-fonts/*.otf
-*.ttf
-*.otf
+# 字体文件（保留 fonts/ 目录下的字体）
+# fonts/*.ttf
+# fonts/*.otf
 
 # GitHub 克隆副本
 Mitsubishi-Electric-Drawing-Replacement-Project/
