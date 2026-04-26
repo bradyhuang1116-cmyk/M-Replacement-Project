@@ -53,11 +53,14 @@ def process_single_file(
     """
     basename = os.path.splitext(os.path.basename(file_path))[0]
     ext = os.path.splitext(file_path)[1].lower()
+    orig_ext = ext  # 保存原始扩展名
 
     # ── 矢量 PDF 快速路径 ──
     if ext == ".pdf" and is_vector_pdf(file_path):
-        output_path = os.path.join(output_dir, basename + "_modified.pdf")
-        result = replace_text_in_pdf(file_path, output_path)
+        vector_dir = os.path.join(output_dir, "vector")
+        os.makedirs(vector_dir, exist_ok=True)
+        output_path = os.path.join(vector_dir, "H" + basename + ".pdf")
+        result = replace_text_in_pdf(file_path, output_path, prefixes=prefixes)
         return {
             "file": file_path,
             "status": "success",
@@ -111,6 +114,26 @@ def process_single_file(
     detected = {k: v for k, v in regions.items() if v is not None}
     logger.info(f"检测到 {len(detected)} 个区域: {list(detected.keys())}")
 
+    # 生成 cyan_box_data（红框预检测），替换阶段直接使用，不再重新 OCR
+    red_bbox = regions.get("material_code_column")
+    reg_metadata = regions.setdefault("_metadata", {})
+    if red_bbox and not reg_metadata.get("cyan_box_data"):
+        from modules.text_replacer import detect_cyan_boxes, detect_row_ys_for_red_box
+        use_img = enhanced if 'enhanced' in locals() else img_array
+        table_search_bbox = reg_metadata.get("table_search_area")
+        row_ys = detect_row_ys_for_red_box(
+            use_img, red_bbox, table_search_bbox=table_search_bbox)
+        p_chars = "".join(p.upper() for p in (prefixes or ["Y"]))
+        red_pattern = (rf"\b[{p_chars}][A-Z0-9\-]{{8}}\b" if len(p_chars) > 1
+                       else rf"\b{p_chars}[A-Z0-9\-]{{8}}\b")
+        cyan_boxes, cyan_box_data = detect_cyan_boxes(
+            use_img, red_bbox, row_ys,
+            pattern=red_pattern, prefixes=prefixes,
+        )
+        reg_metadata["cyan_boxes"] = cyan_boxes
+        reg_metadata["cyan_box_data"] = cyan_box_data
+        logger.info(f"生成 {len(cyan_boxes)} 个青色框（预检测）")
+
     # 调试：保存区域检测图
     if generate_debug:
         from modules.region_detector import draw_regions_debug
@@ -119,12 +142,23 @@ def process_single_file(
         debug_path = os.path.join(output_dir, basename + "_debug_regions.jpg")
         Image.fromarray(debug_img).save(debug_path, quality=90)
 
-    # 文本替换
+    # 文本替换（使用预检测的 cyan_box_data，不重新 OCR）
     modified, replacements = replace_in_all_regions(img_array, regions, filename=basename, prefixes=prefixes)
 
-    # 保存
-    output_path = os.path.join(output_dir, basename + "_modified.jpg")
-    Image.fromarray(modified).save(output_path, quality=95)
+    # 保存（输出格式与原始输入一致）
+    ocr_dir = os.path.join(output_dir, "ocr")
+    os.makedirs(ocr_dir, exist_ok=True)
+    if orig_ext in ('.tif', '.tiff'):
+        out_ext = '.tif'
+    elif orig_ext == '.pdf':
+        out_ext = '.tif'
+    else:
+        out_ext = orig_ext
+    output_path = os.path.join(ocr_dir, "H" + basename + "-R" + out_ext)
+    if out_ext in ('.tif', '.tiff'):
+        Image.fromarray(modified).save(output_path, compression="tiff_lzw")
+    else:
+        Image.fromarray(modified).save(output_path, quality=95)
 
     # 保存后验证
     from modules.text_replacer import verify_output

@@ -597,14 +597,13 @@ def replace_in_all_regions(
     # 固定处理顺序，确保 bottom_right 在 top_left 之前
     ordered = [
         "material_code_column", "bottom_right_number",
-        "top_left_number", "bottom_left_number", "annotations",
+        "top_left_number",
     ]
 
     # ── 预处理：从 metadata 获取检测时的文本 ──
     metadata = regions.get("_metadata", {})
     green_text = metadata.get("bottom_right_text")   # 检测时OCR
     orange_text = metadata.get("top_left_text")       # 检测时OCR
-    purple_text = metadata.get("bottom_left_text")    # 检测时OCR
     red_text = None  # 红框替换后从 repls 中提取
 
     green_bbox = regions.get("bottom_right_number")
@@ -688,15 +687,14 @@ def replace_in_all_regions(
         elif region_name in ("bottom_right_number", "top_left_number"):
             # 首次遇到绿/橙框时执行五方校验
             if region_name == "bottom_right_number":
-                # 五方投票（绿框、橙框、红框、文件名、紫框）
+                # 四方投票（绿框、橙框、红框、文件名）
                 g = _valid_prefix(green_text)
                 o = _valid_prefix(orange_text)
                 r = _valid_prefix(red_text)
                 f = _valid_prefix(filename_y)
-                p = _valid_prefix(purple_text)
-                logger.info(f"  五方校验: green={g}, orange={o}, red={r}, filename={f}, purple={p}")
+                logger.info(f"  四方校验: green={g}, orange={o}, red={r}, filename={f}")
 
-                candidates = [x for x in [g, o, r, f, p] if x]
+                candidates = [x for x in [g, o, r, f] if x]
                 source_y = None
 
                 if not candidates:
@@ -761,75 +759,6 @@ def replace_in_all_regions(
             else:
                 repls = []
                 logger.warning(f"  {region_name}: 无有效文本，跳过替换")
-
-        elif region_name == "bottom_left_number":
-            # 紫框：旋转后替换再旋回贴回
-            # 紫框独立于投票结果，只要首字母为Y就替换为HY+原文其余部分
-            purple_search = metadata.get("purple_search")
-            if purple_search:
-                # 截取搜索区 ROI
-                roi = modified[purple_search.y:purple_search.y + purple_search.h,
-                               purple_search.x:purple_search.x + purple_search.w].copy()
-                # 右旋90° → 竖排变横排
-                rotated_roi = cv2.rotate(roi, cv2.ROTATE_90_CLOCKWISE)
-                rot_h, rot_w = rotated_roi.shape[:2]
-
-                # 复用检测阶段的 OCR 结果（避免重复 OCR）
-                ocr_results = metadata.get("purple_ocr_results")
-                if not ocr_results:
-                    # 回退：重新 OCR
-                    full_box = BBox(0, 0, rot_w, rot_h)
-                    ocr_results = _ocr_region(rotated_roi, full_box, lang="en")
-
-                purple_repls = []
-                for text, conf, poly in ocr_results:
-                    if poly is None:
-                        continue
-                    text_up = text.upper().strip()
-                    if not text_up or text_up[0] not in prefixes_upper:
-                        continue
-                    # 首字母前加H
-                    new_text = "H" + text_up
-                    xs = [pt[0] for pt in poly]
-                    ys = [pt[1] for pt in poly]
-                    rx, ry = int(min(xs)), int(min(ys))
-                    rw, rh_box = int(max(xs) - min(xs)), int(max(ys) - min(ys))
-                    if rw <= 0 or rh_box <= 0:
-                        continue
-
-                    # 白色覆盖 + 渲染替换文字（在旋转后图像上），内缩2px
-                    PM = 2
-                    cv2.rectangle(rotated_roi, (rx + PM, ry + PM),
-                                  (rx + rw - PM, ry + rh_box - PM),
-                                  (255, 255, 255), -1)
-                    text_img = _render_text_distributed(
-                        new_text, max(rw - 2 * PM, 4), max(rh_box - 2 * PM, 4))
-                    pil_rot = Image.fromarray(rotated_roi)
-                    pil_rot.paste(text_img, (rx + PM, ry + PM), text_img)
-                    rotated_roi = np.array(pil_rot)
-                    purple_repls.append((text_up, new_text))
-                    logger.info(f"  紫框旋转替换: '{text_up}' → '{new_text}' at ({rx},{ry},{rw},{rh_box})")
-
-                if purple_repls:
-                    # 左旋90°还原 → 贴回原图
-                    restored_roi = cv2.rotate(rotated_roi, cv2.ROTATE_90_COUNTERCLOCKWISE)
-                    modified[purple_search.y:purple_search.y + purple_search.h,
-                             purple_search.x:purple_search.x + purple_search.w] = restored_roi
-
-                repls = purple_repls
-                logger.info(f"  {region_name}: {len(repls)} 处替换")
-            else:
-                repls = []
-                logger.warning(f"  {region_name}: 无搜索区信息，跳过")
-
-        else:
-            # annotations/蓝框：宽松匹配 Y+字母+数字（如 YA01234）
-            # annotations/蓝框：宽松匹配 前缀+字母+数字
-            ann_pattern = rf"\b[{p_chars}][A-Z]\d{{3,}}\b" if len(p_chars) > 1 else rf"\b{p_chars}[A-Z]\d{{3,}}\b"
-            modified, repls = replace_y_in_region_pixel(
-                modified, bbox, lang=OCR_LANG_EN, use_grid_alignment=False,
-                pattern=ann_pattern, prefixes=prefixes,
-            )
 
         all_replacements.extend(repls)
         logger.info(f"  区域 {region_name}: {len(repls)} 处替换")

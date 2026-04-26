@@ -1,14 +1,17 @@
-"""矢量 PDF 直接文本替换 — 不需要 OCR，速度极快"""
+"""矢量 PDF 直接文本替换 — 基于 rawdict 字符级精准替换，不需要 OCR"""
 
 import re
 import os
+import logging
 
 try:
     import fitz  # PyMuPDF
 except ImportError:
     fitz = None
 
-from config import Y_PATTERN
+from config import DEFAULT_PREFIXES, NEW_PREFIX, PDF_FONT_PATH
+
+logger = logging.getLogger(__name__)
 
 
 def is_vector_pdf(file_path: str, min_text_len: int = 50) -> bool:
@@ -24,20 +27,24 @@ def is_vector_pdf(file_path: str, min_text_len: int = 50) -> bool:
         if len(text) < min_text_len:
             return False
 
-        # 检查是否为垃圾OCR文本（大量乱码/重复字符）
-        # 统计ASCII可打印字符比例
         printable = sum(1 for c in text if 32 <= ord(c) <= 126 or c in '\n\r\t')
         ratio = printable / len(text) if text else 0
-
-        # 如果可打印字符比例 <30%，认为是垃圾OCR
         return ratio >= 0.3
     except Exception:
         return False
 
 
-def replace_text_in_pdf(file_path: str, output_path: str, pattern: str = None) -> dict:
+def replace_text_in_pdf(
+    file_path: str, output_path: str, prefixes: list[str] = None
+) -> dict:
     """
-    在矢量 PDF 中直接替换 Y 开头编号为 HY 开头。
+    在矢量 PDF 中替换匹配编号，使用 rawdict 字符级精准白填充 + textbox 重写。
+
+    流程：
+      1. rawdict 提取每个 span 的字符级 bbox
+      2. 正则匹配编号（如 YA026D941）
+      3. 逐字符白色矩形覆盖
+      4. insert_textbox 写入新文本（H前缀 + 原编号）
 
     返回 dict:
       - replacements: [(old_text, new_text, page_num), ...]
@@ -46,66 +53,117 @@ def replace_text_in_pdf(file_path: str, output_path: str, pattern: str = None) -
     if fitz is None:
         raise ImportError("需要安装 PyMuPDF: pip install PyMuPDF")
 
-    if pattern is None:
-        pattern = Y_PATTERN
+    prefixes = prefixes or DEFAULT_PREFIXES
+    prefixes_upper = [p.upper() for p in prefixes]
+    p_chars = "".join(prefixes_upper)
+
+    # 构建正则：匹配前缀开头 + 至少4位字母数字
+    if len(p_chars) == 1:
+        code_re = re.compile(rf'(?<![A-Z0-9]){p_chars}(?=[A-Z0-9-])')
+    else:
+        code_re = re.compile(rf'(?<![A-Z0-9])[{p_chars}](?=[A-Z0-9-])')
 
     doc = fitz.open(file_path)
     all_replacements = []
 
     for page_num, page in enumerate(doc):
-        # 获取所有文本及其位置
-        blocks = page.get_text("dict")["blocks"]
+        orig_rotation = page.rotation
+        page.set_rotation(0)
 
-        for block in blocks:
-            if block["type"] != 0:  # 跳过图像块
+        blocks = page.get_text("rawdict")["blocks"]
+        replacements = []
+
+        for b in blocks:
+            if "lines" not in b:
                 continue
-            for line in block["lines"]:
+            for line in b["lines"]:
+                direction = line["dir"]
+                # 跳过竖排文本
+                if abs(direction[0]) <= 0.5:
+                    continue
+
                 for span in line["spans"]:
-                    text = span["text"]
-                    # 查找 Y 开头编号
-                    matches = list(re.finditer(pattern, text))
-                    if not matches:
+                    chars = span.get("chars", [])
+                    if not chars:
+                        continue
+                    txt = "".join(c["c"] for c in chars)
+                    m = code_re.search(txt)
+                    if not m:
                         continue
 
-                    # 获取 span 的位置和字体信息
-                    rect = fitz.Rect(span["bbox"])
-                    font_size = span["size"]
-                    font_name = span["font"]
+                    code_start = m.start()
+                    code_end = code_start + 1
+                    while code_end < len(chars) and re.match(
+                        r'[A-Z0-9a-z-]', chars[code_end]["c"]
+                    ):
+                        code_end += 1
 
-                    # 构造替换文本
-                    new_text = text
-                    for m in reversed(matches):
-                        old = m.group()
-                        replacement = "HY" + old[1:]
-                        new_text = new_text[:m.start()] + replacement + new_text[m.end():]
-                        all_replacements.append((old, replacement, page_num))
+                    code_text = txt[code_start:code_end]
+                    if len(code_text) < 7:
+                        continue
 
-                    if new_text != text:
-                        # 用 redaction 遮盖原文
-                        page.add_redact_annot(rect, fill=(1, 1, 1))
-                        page.apply_redactions()
+                    new_text = NEW_PREFIX + code_text
+                    code_chars = chars[code_start:code_end]
 
-                        # 在原位置插入新文本
-                        # 尝试使用原字体，若不可用则用 helvetica
-                        try:
-                            page.insert_text(
-                                rect.tl + fitz.Point(0, font_size * 0.85),
-                                new_text,
-                                fontsize=font_size,
-                                fontname="helv",
-                            )
-                        except Exception:
-                            page.insert_text(
-                                rect.tl + fitz.Point(0, font_size * 0.85),
-                                new_text,
-                                fontsize=font_size,
-                            )
+                    x0 = min(c["bbox"][0] for c in code_chars)
+                    y0 = min(c["bbox"][1] for c in code_chars)
+                    x1 = max(c["bbox"][2] for c in code_chars)
+                    y1 = max(c["bbox"][3] for c in code_chars)
 
-    # 保存
+                    replacements.append({
+                        "code_text": code_text,
+                        "new_text": new_text,
+                        "code_bbox": (x0, y0, x1, y1),
+                        "char_bboxes": [c["bbox"] for c in code_chars],
+                        "size": span["size"],
+                    })
+
+        if not replacements:
+            page.set_rotation(orig_rotation)
+            continue
+
+        # Step 1: 逐字符白色覆盖
+        shape = page.new_shape()
+        for r in replacements:
+            for cb in r["char_bboxes"]:
+                shape.draw_rect(fitz.Rect(cb))
+        shape.finish(color=None, fill=(1, 1, 1))
+        shape.commit()
+
+        # Step 2: 写入新文本
+        for r in replacements:
+            rect = fitz.Rect(r["code_bbox"])
+            fontsize = r["size"] - 3
+
+            rc = page.insert_textbox(
+                rect, r["new_text"],
+                fontname="josefin", fontfile=PDF_FONT_PATH,
+                fontsize=fontsize, color=(0, 0, 0),
+                align=fitz.TEXT_ALIGN_LEFT,
+            )
+            if rc < 0:
+                page.insert_textbox(
+                    rect, r["new_text"],
+                    fontname="josefin", fontfile=PDF_FONT_PATH,
+                    fontsize=0, color=(0, 0, 0),
+                    align=fitz.TEXT_ALIGN_LEFT,
+                )
+
+            all_replacements.append(
+                (r["code_text"], r["new_text"], page_num)
+            )
+            logger.info(
+                f"  PDF替换: '{r['code_text']}' → '{r['new_text']}' "
+                f"page={page_num} size={fontsize:.1f}"
+            )
+
+        page.set_rotation(orig_rotation)
+
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     doc.save(output_path)
     doc.close()
 
+    logger.info(f"PDF替换完成: {len(all_replacements)} 处, 保存至 {output_path}")
     return {
         "replacements": all_replacements,
         "total": len(all_replacements),

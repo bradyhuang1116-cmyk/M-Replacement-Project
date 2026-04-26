@@ -10,7 +10,7 @@ import numpy as np
 from config import (
     DEFAULT_REGIONS, KEYWORD_ANCHORS,
     Y_PATTERN, OCR_LANG_EN, OCR_LANG_CH, FUZZY_DIGIT_MAP,
-    make_pattern, DEFAULT_PREFIXES,
+    make_pattern, DEFAULT_PREFIXES, OCR_MODE,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,6 +364,7 @@ def _ocr_region(image_rgb: np.ndarray, bbox: BBox, lang: str = OCR_LANG_EN) -> l
         else:
             out.append((text, conf, None))
     return out
+
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1750,82 +1751,66 @@ def _detect_morph_lines(gray: np.ndarray):
 
 def _find_cell_from_lines(text_bbox: BBox, vlines: list, hlines: list,
                           img_w: int) -> BBox:
-    """用 morph 线生成单元格边界。所有边界均为 morph 线。
+    """用 morph 线生成单元格边界。
 
-    规则：
-    - 上/左：离 OCR 边界绝对距离最近的 morph 线
-    - 下：离 OCR 下边界绝对距离最近、且长度 ≥ OCR 宽度 70% 的横线
-    - 右：特殊多条件规则
+    严格规则：
+    - 每条边界只能来自 morph 线或 OCR bbox 边界
+    - 上边界：文字中心上方、最近的横线；无则用 OCR 上边界
+    - 下边界：文字中心下方、最近的横线；无则用 OCR 下边界
+    - 左边界：文字中心左侧、最近的竖线（在 OCR 左边界 ±10% 内）；无则用 OCR 左边界
+    - 右边界：文字中心右侧、最近的竖线；无则用 OCR 右边界
+    - 必须保证 top < bottom, left < right
     """
-    # ── 左边界 ──
-    # 二次过滤：竖线高度须 ≥ OCR 识别框高度的 0.8，否则不参与左边界
-    min_vh_for_left = text_bbox.h * 0.8
-    vlines_left_candidates = [(x, y1, y2) for x, y1, y2 in vlines
-                              if (y2 - y1) >= min_vh_for_left]
-    # 在 OCR 左边界左右 10% 宽度范围内搜索竖线
-    margin = text_bbox.w * 0.1
-    left_search_lo = text_bbox.x - margin
-    left_search_hi = text_bbox.x + margin
-    nearby_left = [(x, y1, y2) for x, y1, y2 in vlines_left_candidates
-                   if left_search_lo <= x <= left_search_hi]
-    if not nearby_left:
-        # 10% 范围内无合格竖线 → 用 OCR 左边界
-        cell_left = text_bbox.x
+    text_cx = (text_bbox.x + text_bbox.x2) // 2
+    text_cy = (text_bbox.y + text_bbox.y2) // 2
+
+    # ── 上边界：text_cy 上方最近的横线 ──
+    above_hlines = [(y, x1, x2) for y, x1, x2 in hlines if y <= text_cy]
+    if above_hlines:
+        cell_top = max(above_hlines, key=lambda h: h[0])[0]  # 最近的（y最大）
     else:
-        # 取距 OCR 左边界最近的竖线
-        cell_left = min(nearby_left, key=lambda v: abs(v[0] - text_bbox.x))[0]
+        cell_top = text_bbox.y
 
-    # ── 上边界 ──
-    cell_top = text_bbox.y
-    best_dist = float('inf')
-    for y, x1, x2 in hlines:
-        dist = abs(y - text_bbox.y)
-        if dist < best_dist:
-            best_dist = dist
-            cell_top = y
+    # ── 下边界：text_cy 下方最近的横线 ──
+    below_hlines = [(y, x1, x2) for y, x1, x2 in hlines if y >= text_cy]
+    if below_hlines:
+        cell_bottom = min(below_hlines, key=lambda h: h[0])[0]  # 最近的（y最小）
+    else:
+        cell_bottom = text_bbox.y2
 
-    # ── 下边界：离 OCR 下边界最近、且长度 ≥ OCR 宽度 70% ──
-    cell_bottom = text_bbox.y2
-    min_hlen = text_bbox.w * 0.7
-    hlines_by_bottom_dist = sorted(hlines, key=lambda h: abs(h[0] - text_bbox.y2))
-    for y, x1, x2 in hlines_by_bottom_dist:
-        if (x2 - x1) >= min_hlen:
-            cell_bottom = y
-            break
+    # ── 左边界：text_cx 左侧、OCR 左边界 ±10% 内最近的竖线 ──
+    margin = text_bbox.w * 0.1
+    left_candidates = [(x, y1, y2) for x, y1, y2 in vlines
+                       if x <= text_cx and (text_bbox.x - margin) <= x <= (text_bbox.x + margin)]
+    if left_candidates:
+        cell_left = min(left_candidates, key=lambda v: abs(v[0] - text_bbox.x))[0]
+    else:
+        cell_left = text_bbox.x
 
-    # ── 右边界：特殊多条件规则 ──
-    rightmost_vx = max((x for x, y1, y2 in vlines), default=None) if vlines else None
-    vlines_by_dist = sorted(vlines, key=lambda v: abs(v[0] - text_bbox.x2))
-
-    cell_right = text_bbox.x2
-    if vlines_by_dist:
-        nearest_x = vlines_by_dist[0][0]
-        if nearest_x >= text_bbox.x2:
-            right_third_start = text_bbox.x + int(text_bbox.w * 2 / 3)
-            inner_right = [x for x, y1, y2 in vlines
-                           if right_third_start <= x < text_bbox.x2]
-            if inner_right:
-                cell_right = max(inner_right)
-            else:
-                cell_right = nearest_x
-        else:
-            if rightmost_vx is not None and nearest_x != rightmost_vx:
-                cell_right = nearest_x
-            else:
-                left_vlines = sorted(
-                    [(x, y1, y2) for x, y1, y2 in vlines if x < text_bbox.x2],
-                    key=lambda v: text_bbox.x2 - v[0]
-                )
-                if len(left_vlines) >= 2:
-                    cell_right = left_vlines[1][0]
-
-    # 宽度检查
-    cell_w = cell_right - cell_left
-    if cell_w < text_bbox.w * 0.7:
+    # ── 右边界：text_cx 右侧最近的竖线 ──
+    right_candidates = [(x, y1, y2) for x, y1, y2 in vlines if x >= text_cx]
+    if right_candidates:
+        cell_right = min(right_candidates, key=lambda v: v[0])[0]  # 最近的（x最小）
+    else:
         cell_right = text_bbox.x2
 
-    return BBox(cell_left, cell_top,
-                cell_right - cell_left, cell_bottom - cell_top)
+    # ── 安全检查：保证 cell 包含 OCR bbox ──
+    if cell_top > text_bbox.y:
+        cell_top = text_bbox.y
+    if cell_bottom < text_bbox.y2:
+        cell_bottom = text_bbox.y2
+    if cell_left > text_bbox.x:
+        cell_left = text_bbox.x
+    if cell_right < text_bbox.x2:
+        cell_right = text_bbox.x2
+
+    cell_w = cell_right - cell_left
+    cell_h = cell_bottom - cell_top
+
+    logger.info(f"  cell_from_lines: top={cell_top}, bottom={cell_bottom}, "
+                f"left={cell_left}, right={cell_right}, w={cell_w}, h={cell_h}")
+
+    return BBox(cell_left, cell_top, cell_w, cell_h)
 
 
 def _make_green_bbox(ocr_bbox: BBox, cell: BBox) -> BBox:
@@ -2134,68 +2119,6 @@ def _locate_bottom_right_number_core(
 
 
 # ══════════════════════════════════════════════════════════════════
-#  Phase B-4: 定位左下角竖排编号
-# ══════════════════════════════════════════════════════════════════
-
-def _locate_bottom_left_number(
-    sub_image: np.ndarray,
-    prefixes: list[str] = None,
-) -> tuple[str, BBox, list] | None:
-    """在子图（紫框搜索区裁切）中找到竖排 Y 编号。
-
-    返回 (文本, 子图坐标BBox, 旋转后OCR结果) 或 None。
-    """
-    if sub_image.size == 0:
-        return None
-
-    roi_h, roi_w = sub_image.shape[:2]
-
-    # 右旋90°：竖排文字变横排
-    rotated = cv2.rotate(sub_image, cv2.ROTATE_90_CLOCKWISE)
-
-    # OCR 扫描旋转后图像
-    rot_h, rot_w = rotated.shape[:2]
-    full_bbox = BBox(0, 0, rot_w, rot_h)
-    ocr_results = _ocr_region(rotated, full_bbox, lang="en")
-
-    for text, conf, poly in ocr_results:
-        if poly is None:
-            continue
-        xs = [p[0] for p in poly]
-        ys = [p[1] for p in poly]
-        rx = int(min(xs))
-        ry = int(min(ys))
-        rw = int(max(xs) - min(xs))
-        rh = int(max(ys) - min(ys))
-
-        # 过滤垂直文字：旋转后宽<高说明原本是水平文字，不是目标
-        if rw < rh:
-            logger.debug(f"  紫框跳过垂直文字: '{text}' ({rw}x{rh})")
-            continue
-
-        text_up = text.upper().strip()
-        prefixes_upper = {p.upper() for p in (prefixes or DEFAULT_PREFIXES)}
-        if not text_up or text_up[0] not in prefixes_upper:
-            continue
-
-        # 映射回子图坐标（右旋90°CW 逆映射）
-        # rotated(rx, ry) → orig(ry, roi_h - rx - rw)
-        # rotated(rw, rh) → orig(rh, rw)
-        orig_x = ry
-        orig_y = roi_h - rx - rw
-        orig_w = rh
-        orig_h = rw
-
-        result_bbox = BBox(orig_x, orig_y, orig_w, orig_h)
-        logger.info(f"  紫框找到竖排 Y 编号: '{text_up}' "
-                    f"旋转后BBox({rx},{ry},{rw},{rh}) → 子图{result_bbox}")
-        return (text_up, result_bbox, ocr_results)
-
-    logger.info("  紫框未找到 Y 编号")
-    return None
-
-
-# ══════════════════════════════════════════════════════════════════
 #  Phase B-3: 定位左上角编号栏
 # ══════════════════════════════════════════════════════════════════
 
@@ -2226,20 +2149,21 @@ def _enhance_vertical_lines(image: np.ndarray) -> np.ndarray:
     return result
 
 
-def _locate_top_left_number(
+def _locate_top_left_number_core(
     sub_image: np.ndarray,
+    gray: np.ndarray,
+    img_h: int, img_w: int,
     material_code_bbox: BBox | None = None,
     prefixes: list[str] = None,
 ) -> tuple[str, BBox] | None:
-    """在子图（橙框搜索区裁切）中找到编号。
+    """在子图中用多策略 OCR 搜索编号（橙框核心逻辑）。
 
     策略：
     1. OCR 子图，直接搜索独立的编号文字
-    2. 若编号与 DWG NO 合体识别，用局部重OCR从合体文本中精确定位编号
+    2. 若编号与 DWG NO / 图号 合体识别，用局部重OCR从合体文本中精确定位编号
     3. 兜底搜索所有 OCR 文本
     返回 (文本, BBox) 或 None，坐标为子图内坐标。
     """
-    img_h, img_w = sub_image.shape[:2]
     y_re = re.compile(make_pattern(prefixes))
 
     search = BBox(0, 0, img_w, img_h)
@@ -2250,18 +2174,24 @@ def _locate_top_left_number(
         if poly is None:
             continue
         text_up = text.upper().strip()
-        # 跳过 DWG NO 合体文本（策略 2 处理）
-        if any(text_up.startswith(prefix) for prefix in ("DWG", "OWG", "図")):
+        # 跳过 DWG NO / 图号 合体文本（策略 2 处理）
+        if any(text_up.startswith(prefix) for prefix in ("DWG", "OWG", "図", "图")):
             continue
-        m = y_re.search(text_up)
+        # 优先用去空格文本匹配（避免空格截断编号），取更长结果
+        text_no_sp = text_up.replace(" ", "")
+        m_orig = y_re.search(text_up)
+        m_nosp = y_re.search(text_no_sp)
+        # 取匹配更长的结果；相同则优先去空格版（完整编号）
+        if m_orig and m_nosp:
+            m = m_nosp if len(m_nosp.group()) >= len(m_orig.group()) else m_orig
+        else:
+            m = m_nosp or m_orig
         if not m:
-            m = y_re.search(text_up.replace(" ", ""))
-        if not m:
-            fuzzy_text = _fuzzy_fix_y_text(text_up.replace(" ", ""))
+            fuzzy_text = _fuzzy_fix_y_text(text_no_sp)
             if fuzzy_text:
                 m = y_re.search(fuzzy_text)
                 if m:
-                    logger.info(f"  策略1模糊回填: '{text_up.replace(' ', '')}' → '{fuzzy_text}'")
+                    logger.info(f"  策略1模糊回填: '{text_no_sp}' → '{fuzzy_text}'")
         if m:
             xs = [p[0] for p in poly]
             ys = [p[1] for p in poly]
@@ -2306,9 +2236,16 @@ def _locate_top_left_number(
     for t, c, _ in ocr_results:
         logger.debug(f"    OCR: '{t}' (conf={c:.2f})")
 
-    # ── 策略 2：从 DWG NO 合体文本中提取编号位置 ──
-    dwg_keywords = ["DWG NO", "DWG NO.", "DWGNO", "DWG", "図番", "図面番号"]
+    # ── 策略 2：从 DWG NO / 图号 合体文本中提取编号位置 ──
+    dwg_keywords = ["DWG NO", "DWG NO.", "DWGNO", "DWG", "図番", "図面番号", "图号"]
     dwg_match = _fuzzy_find_keyword(ocr_results, dwg_keywords, threshold=0.60)
+
+    # 英文 OCR 未找到关键词 → 用中文 OCR 回退
+    if dwg_match is None:
+        ocr_results_ch = _ocr_region(sub_image, search, lang=OCR_LANG_CH)
+        dwg_match = _fuzzy_find_keyword(ocr_results_ch, dwg_keywords, threshold=0.60)
+        if dwg_match:
+            logger.info(f"  中文OCR回退找到关键词: '{dwg_match['text']}' (score={dwg_match['score']:.2f})")
 
     if dwg_match and dwg_match.get("poly"):
         logger.info(
@@ -2318,10 +2255,10 @@ def _locate_top_left_number(
         text_up = dwg_match["text"].upper()
 
         # OCR 可能在编号中插入空格（如 "YA026 D 941"），去除后再匹配
-        # 先找 DWG NO 前缀的结束位置
+        # 先找 DWG NO / 图号 前缀的结束位置
         prefix_end = 0
-        for prefix in ["DWG NO.", "DWG NO", "DWGNO", "DWG"]:
-            if text_up.startswith(prefix):
+        for prefix in ["DWG NO.", "DWG NO", "DWGNO", "DWG", "図面番号", "図番", "图号"]:
+            if text_up.startswith(prefix) or dwg_match["text"].startswith(prefix):
                 prefix_end = len(prefix)
                 break
         while prefix_end < len(text_up) and text_up[prefix_end] in (" ", "."):
@@ -2480,6 +2417,126 @@ def _locate_top_left_number(
     return None
 
 
+def _locate_top_left_number(
+    sub_image: np.ndarray,
+    material_code_bbox: BBox | None = None,
+    prefixes: list[str] = None,
+) -> tuple[str, BBox] | None:
+    """在子图（橙框搜索区裁切）中找到编号栏。
+
+    流程（与绿框 _locate_bottom_right_number 对称）：
+      1. 第一轮 OCR → 大致定位
+      2. v1 cell → 裁切基准
+      3. 二次裁切（下/右 25% padding，上/左保留到图边）
+      4. 裁切图上重新 OCR + morph 线检测 + cell + 橙框生成
+      5. 橙框坐标映射回子图坐标系
+
+    返回 (文本, BBox) 或 None，坐标为子图内坐标。
+    """
+    img_h, img_w = sub_image.shape[:2]
+    gray = cv2.cvtColor(sub_image, cv2.COLOR_RGB2GRAY)
+
+    # ── 第一轮 OCR：大致定位 ──
+    found = _locate_top_left_number_core(
+        sub_image, gray, img_h, img_w, material_code_bbox, prefixes
+    )
+    if found is None:
+        return None
+
+    y_text_orig, ocr_bbox_orig = found
+
+    # ── 用 v1 获取 cell 作为裁切基准 ──
+    _, cell_v1 = _find_cell_boundary(
+        gray, ocr_bbox_orig, img_h, img_w,
+        y_text_orig if y_text_orig else "UNKNOWN", _return_cell=True
+    )
+
+    # ── 二次裁切：上/左保留到图边，下/右 25% padding ──
+    pad_x = int(cell_v1.w * 0.25)
+    pad_y = int(cell_v1.h * 0.25)
+    cx1 = 0                                     # 保留到左边界
+    cy1 = 0                                     # 保留到上边界
+    cx2 = min(img_w, cell_v1.x2 + pad_x)       # 右侧 25% padding
+    cy2 = min(img_h, cell_v1.y2 + pad_y)       # 下侧 25% padding
+
+    cropped_rgb = sub_image[cy1:cy2, cx1:cx2].copy()
+    cropped_gray = gray[cy1:cy2, cx1:cx2]
+    ch, cw = cropped_gray.shape[:2]
+
+    logger.info(f"  橙框二次裁切: offset=({cx1},{cy1}), size={cw}x{ch}")
+
+    # ── 裁切图上重新 OCR ──
+    new_core = _locate_top_left_number_core(
+        cropped_rgb, cropped_gray, ch, cw, None, prefixes
+    )
+
+    # ── 备选1：加 10% padding 重试 ──
+    if new_core is None:
+        pad_extra_x = int(cell_v1.w * 0.10)
+        pad_extra_y = int(cell_v1.h * 0.10)
+        ex1 = max(0, cx1 - pad_extra_x)
+        ey1 = max(0, cy1 - pad_extra_y)
+        ex2 = min(img_w, cx2 + pad_extra_x)
+        ey2 = min(img_h, cy2 + pad_extra_y)
+        expanded_rgb = sub_image[ey1:ey2, ex1:ex2].copy()
+        expanded_gray = gray[ey1:ey2, ex1:ex2]
+        eh, ew = expanded_gray.shape[:2]
+        logger.info(f"  橙框备选1: +10%padding裁切 offset=({ex1},{ey1}), size={ew}x{eh}")
+        new_core = _locate_top_left_number_core(
+            expanded_rgb, expanded_gray, eh, ew, None, prefixes
+        )
+        if new_core is not None:
+            logger.info(f"  橙框备选1成功: text='{new_core[0]}'")
+            cx1, cy1, cx2, cy2 = ex1, ey1, ex2, ey2
+            cropped_rgb = expanded_rgb
+            cropped_gray = expanded_gray
+            ch, cw = eh, ew
+
+    # ── 备选2：二次OCR失败，用第一轮结果 + 裁切图 morph 线 ──
+    if new_core is None:
+        logger.info("  橙框备选2: 二次OCR失败, 用第一轮结果+裁切图morph")
+        # 将第一轮 OCR bbox 映射到裁切图坐标
+        mapped_ocr = BBox(
+            ocr_bbox_orig.x - cx1, ocr_bbox_orig.y - cy1,
+            ocr_bbox_orig.w, ocr_bbox_orig.h
+        )
+        # 裁切图 morph 线
+        vlines, hlines = _detect_morph_lines(cropped_gray)
+        logger.info(f"  橙框裁切图morph线: {len(vlines)}条竖线, {len(hlines)}条横线")
+        cell = _find_cell_from_lines(mapped_ocr, vlines, hlines, cw)
+        orange = _make_green_bbox(mapped_ocr, cell)
+        # 映射回子图坐标
+        result_bbox = BBox(orange.x + cx1, orange.y + cy1, orange.w, orange.h)
+        # 如果橙框高度为0，回退到完整搜索区 morph
+        if result_bbox.h <= 0:
+            logger.info("  橙框备选2产生h=0, 回退到完整搜索区morph")
+            vlines_full, hlines_full = _detect_morph_lines(gray)
+            logger.info(f"  橙框搜索区morph线: {len(vlines_full)}条竖线, {len(hlines_full)}条横线")
+            cell = _find_cell_from_lines(ocr_bbox_orig, vlines_full, hlines_full, img_w)
+            orange = _make_green_bbox(ocr_bbox_orig, cell)
+            result_bbox = orange
+        logger.info(f"  最终橙框(备选2, 子图坐标): {result_bbox}, text='{y_text_orig}'")
+        return (y_text_orig, result_bbox)
+
+    new_text, new_ocr = new_core
+
+    # ── 裁切图上 morph 线检测 ──
+    vlines, hlines = _detect_morph_lines(cropped_gray)
+    logger.info(f"  橙框裁切图morph线: {len(vlines)}条竖线, {len(hlines)}条横线")
+
+    # ── 用 morph 线生成 cell 边界 ──
+    cell = _find_cell_from_lines(new_ocr, vlines, hlines, cw)
+
+    # ── 生成橙框 ──
+    orange = _make_green_bbox(new_ocr, cell)
+
+    # ── 坐标映射回子图坐标系 ──
+    result_bbox = BBox(orange.x + cx1, orange.y + cy1, orange.w, orange.h)
+    logger.info(f"  最终橙框(子图坐标): {result_bbox}, text='{new_text}'")
+
+    return (new_text, result_bbox)
+
+
 # ══════════════════════════════════════════════════════════════════
 #  旧版后备检测（关键词检测失败时使用）
 # ══════════════════════════════════════════════════════════════════
@@ -2571,7 +2628,7 @@ def detect_all_regions(
     """
     检测图纸中所有目标区域。
 
-    策略：裁切4个搜索区子图，4路并行OCR检测（红/绿/紫/橙）。
+    策略：裁切3个搜索区子图，3路并行OCR检测（红/绿/橙）。
     各搜索区裁切后，若最长边超过 2100px 则缩放后再做 OCR/CV。
 
     返回 dict: {区域名: BBox 或 None, "_metadata": {...}}
@@ -2606,30 +2663,25 @@ def detect_all_regions(
     green_search = BBox(green_x, green_y, img_w - green_x, img_h - green_y)
     logger.info(f"  绿框搜索区域: {green_search}")
 
-    # 紫框搜索区域: 左边界~绿框左边界, 从下往上1.5/6~下边界
-    purple_y = img_h - int(img_h * 1.5 / 6.0)
-    purple_search = BBox(0, purple_y, green_x, img_h - purple_y)
-    logger.info(f"  紫框搜索区域: {purple_search}")
-
-    # 橙框搜索区域: 图片左边界 ~ 右 2/8, 图片顶部 ~ 上 2/12（再缩 1/3）
+    # 橙框搜索区域: 图片左边界 ~ 右 2/8, 图片顶部 ~ 上 2/12（再缩 1/3）+ 下扩 5%
     orange_h_full = int(img_h * (2.0 / 12.0))
+    orange_h_base = orange_h_full - int(orange_h_full / 3)
+    orange_h_expanded = orange_h_base + int(img_h * 0.05)
     orange_search = BBox(0, 0,
                          int(img_w * (2.0 / 8.0)),
-                         orange_h_full - int(orange_h_full / 3))
+                         orange_h_expanded)
     logger.info(f"  橙框搜索区域: {orange_search}")
 
     # ── Phase B: 裁切子图 + 4路并行 OCR 检测 ──
     # 每个线程独立创建 PaddleOCR 实例（线程本地缓存），避免共享 predictor
     from concurrent.futures import ThreadPoolExecutor
-    logger.info("Phase B: 裁切子图并行检测（4线程）...")
+    logger.info("Phase B: 裁切子图并行检测（3线程）...")
 
     red_sub, red_scale = _crop_and_scale(image, red_search)
     green_sub, green_scale = _crop_and_scale(image, green_search)
-    purple_sub, purple_scale = _crop_and_scale(image, purple_search)
     orange_sub, orange_scale = _crop_and_scale(image, orange_search)
     logger.info(f"  红框裁切: {red_sub.shape[1]}x{red_sub.shape[0]} (scale={red_scale:.3f})")
     logger.info(f"  绿框裁切: {green_sub.shape[1]}x{green_sub.shape[0]} (scale={green_scale:.3f})")
-    logger.info(f"  紫框裁切: {purple_sub.shape[1]}x{purple_sub.shape[0]} (scale={purple_scale:.3f})")
     logger.info(f"  橙框裁切: {orange_sub.shape[1]}x{orange_sub.shape[0]} (scale={orange_scale:.3f})")
 
     def _detect_red():
@@ -2638,21 +2690,16 @@ def detect_all_regions(
     def _detect_green():
         return _locate_bottom_right_number(green_sub, prefixes=prefixes)
 
-    def _detect_purple():
-        return _locate_bottom_left_number(purple_sub, prefixes=prefixes)
-
     def _detect_orange():
         return _locate_top_left_number(orange_sub, None, prefixes=prefixes)
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         f_red = executor.submit(_detect_red)
         f_green = executor.submit(_detect_green)
-        f_purple = executor.submit(_detect_purple)
         f_orange = executor.submit(_detect_orange)
 
         mat_result = f_red.result()
         br_result = f_green.result()
-        bl_result = f_purple.result()
         tl_result = f_orange.result()
 
     # ── 汇总结果 ──
@@ -2681,40 +2728,23 @@ def detect_all_regions(
     else:
         tl_bbox = None
 
-    if bl_result:
-        bl_text, bl_bbox_sub, bl_ocr = bl_result
-        bl_bbox = _map_bbox_back(bl_bbox_sub, purple_search, purple_scale)
-        metadata["bottom_left_text"] = bl_text
-        metadata["purple_ocr_results"] = bl_ocr
-    else:
-        bl_bbox = None
-
-    # ── 注释区域（百分比，不变）──
-    ann_pct = region_config.get("annotations", DEFAULT_REGIONS["annotations"])
-    ann_bbox = _pct_to_px(image, ann_pct)
-
     # ── 组装结果 ──
     metadata["table_search_area"] = table_search_bbox
-    metadata["purple_search"] = purple_search  # 替换时需要
     metadata["search_areas"] = {
         "red_search": red_search,
         "green_search": green_search,
-        "purple_search": purple_search,
         "orange_search": orange_search,
     }
     metadata["crop_scales"] = {
         "red": red_scale,
         "green": green_scale,
         "orange": orange_scale,
-        "purple": purple_scale,
     }
 
     result = {
         "material_code_column": mat_bbox,
         "bottom_right_number": br_bbox,
         "top_left_number": tl_bbox,
-        "bottom_left_number": bl_bbox,
-        "annotations": ann_bbox,
         "_metadata": metadata,
     }
 
@@ -2740,8 +2770,6 @@ def draw_regions_debug(image: np.ndarray, regions: dict) -> np.ndarray:
         "material_code_column": (255, 0, 0),
         "bottom_right_number": (0, 255, 0),
         "top_left_number": (255, 165, 0),
-        "bottom_left_number": (128, 0, 128),
-        "annotations": (0, 0, 255),
     }
     debug_img = image.copy()
 
@@ -2750,11 +2778,15 @@ def draw_regions_debug(image: np.ndarray, regions: dict) -> np.ndarray:
         if name.startswith("_") or bbox is None:
             continue
         color = colors.get(name, (128, 128, 128))
-        cv2.rectangle(debug_img, (bbox.x, bbox.y), (bbox.x2, bbox.y2), color, 3)
-        cv2.putText(
-            debug_img, name, (bbox.x, bbox.y - 10),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2,
-        )
+        bboxes = bbox if isinstance(bbox, list) else [bbox]
+        for b in bboxes:
+            if b is None:
+                continue
+            cv2.rectangle(debug_img, (b.x, b.y), (b.x2, b.y2), color, 3)
+            cv2.putText(
+                debug_img, name, (b.x, b.y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2,
+            )
 
     # 显示检测元信息
     meta = regions.get("_metadata", {})

@@ -31,10 +31,11 @@ import cv2
 from PIL import Image
 import numpy as np
 
-from config import SUPPORTED_EXTENSIONS, DEFAULT_PREFIXES, set_ocr_mode, OCR_MODE
+from config import SUPPORTED_EXTENSIONS, DEFAULT_PREFIXES, set_ocr_mode
 from modules.batch_processor import process_single_file
 from modules.file_ingestion import load_file
-from modules.region_detector import detect_all_regions, draw_regions_debug, _detect_horizontal_lines, _detect_horizontal_lines_adaptive, _enhance_vertical_lines, BBox
+from modules.pdf_vector_handler import is_vector_pdf, replace_text_in_pdf
+from modules.region_detector import detect_all_regions, draw_regions_debug, _enhance_vertical_lines
 from modules.text_replacer import detect_cyan_boxes, replace_in_all_regions, detect_row_ys_for_red_box, clear_ocr_cache
 
 BASE_DIR = Path(__file__).parent
@@ -45,18 +46,17 @@ RESULT_DIR.mkdir(exist_ok=True)
 _detect_cache: dict[str, tuple[np.ndarray, dict]] = {}
 
 
-def load_model_ui(device_choice, model_choice):
-    """手动加载/切换 OCR 模型。"""
+def load_model_ui(device_choice):
+    """手动加载/切换 OCR 模型（始终使用 Server 模型）。"""
     import time
     try:
         device = "gpu" if device_choice == "GPU" else "cpu"
-        model_type = "server" if model_choice == "Server (高精度)" else "mobile"
 
         # 切换模式 + 清除旧缓存
-        set_ocr_mode(device=device, model_type=model_type)
+        set_ocr_mode(device=device, model_type="server")
         clear_ocr_cache()
 
-        logger.info(f"加载模型: device={device}, model={model_type}")
+        logger.info(f"加载模型: device={device}, model=server")
         t0 = time.time()
 
         from modules.text_replacer import _get_ocr
@@ -64,7 +64,7 @@ def load_model_ui(device_choice, model_choice):
         _get_ocr("ch")
 
         elapsed = time.time() - t0
-        mode_str = f"{device.upper()} + {model_type}"
+        mode_str = f"{device.upper()} + Server"
         return f"模型加载完成: {mode_str} ({elapsed:.1f}s)"
     except Exception as e:
         logger.error(f"模型加载失败: {e}", exc_info=True)
@@ -97,6 +97,21 @@ def detect_regions(files, prefixes):
         logger.info(f"检测区域 ({i+1}/{len(files)}): {fname}")
 
         try:
+            # 矢量 PDF：跳过区域检测，直接标记为向量路径
+            if ext == ".pdf" and is_vector_pdf(f):
+                logger.info(f"  矢量PDF，跳过区域检测: {fname}")
+                _detect_cache[fname] = ("vector_pdf", f)
+                import fitz
+                doc = fitz.open(f)
+                pix = doc[0].get_pixmap(dpi=150)
+                preview_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                doc.close()
+                preview_images.append((
+                    preview_img,
+                    f"{fname} - 矢量PDF（直接替换）"
+                ))
+                continue
+
             img_array, _ = load_file(f)
 
             # 竖线增强预处理：加粗细竖线，帮助 OCR 正确分段。
@@ -164,7 +179,10 @@ def run_replace(files, prefixes):
     out_dir = RESULT_DIR / "latest"
     if out_dir.exists():
         shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
+    out_dir_vector = out_dir / "vector"
+    out_dir_ocr = out_dir / "ocr"
+    out_dir_vector.mkdir(parents=True)
+    out_dir_ocr.mkdir(parents=True)
 
     result_images = []
     total_replacements = 0
@@ -179,18 +197,43 @@ def run_replace(files, prefixes):
 
         try:
             cached = _detect_cache.get(fname)
-            if cached:
-                # 使用检测阶段缓存的结果，直接替换
+            if cached and isinstance(cached[0], str) and cached[0] == "vector_pdf":
+                # 矢量 PDF：直接用 pdf_vector_handler 替换
+                src_path = cached[1]
+                basename = os.path.splitext(fname)[0]
+                output_path = str(out_dir_vector / ("H" + basename + ".pdf"))
+                result = replace_text_in_pdf(src_path, output_path, prefixes=prefixes)
+                count = result["total"]
+                total_replacements += count
+                # 渲染首页为预览图
+                import fitz
+                doc = fitz.open(output_path)
+                pix = doc[0].get_pixmap(dpi=150)
+                mod_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                doc.close()
+                result_images.append((
+                    mod_img,
+                    f"{fname} ({count} 处替换, 矢量PDF)"
+                ))
+            elif cached:
+                # OCR 模式替换，输出格式与输入一致
                 img_array, regions = cached
                 basename = os.path.splitext(fname)[0]
                 modified, replacements = replace_in_all_regions(
                     img_array, regions, filename=basename, prefixes=prefixes,
                 )
                 count = len(replacements)
-                # 直接从 numpy 转 PIL，避免磁盘写读循环
                 mod_img = Image.fromarray(modified)
-                output_path = str(out_dir / (basename + "_modified.jpg"))
-                mod_img.save(output_path, quality=95)
+                # 保持输入格式：PDF/TIF→TIF，其他→原格式
+                if ext in ('.pdf', '.tif', '.tiff'):
+                    out_ext = '.tif'
+                else:
+                    out_ext = ext
+                output_path = str(out_dir_ocr / ("H" + basename + "-R" + out_ext))
+                if out_ext == '.tif':
+                    mod_img.save(output_path, compression="tiff_lzw")
+                else:
+                    mod_img.save(output_path, quality=95)
                 total_replacements += count
                 result_images.append((
                     mod_img,
@@ -279,7 +322,7 @@ with gr.Blocks(title="图纸编号替换系统") as demo:
             )
             prefix_input = gr.CheckboxGroup(
                 choices=list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
-                value=["X", "Y", "Z", "B"],
+                value=["X", "Y"],
                 label="2. 选择检测首字母",
                 info="编号首字母匹配规则，替换为 H+原文",
             )
@@ -299,18 +342,11 @@ with gr.Blocks(title="图纸编号替换系统") as demo:
                     choices=["CPU", "GPU"],
                     value="CPU",
                     label="运算设备",
-                    info="GPU 需要 paddlepaddle-gpu + CUDA",
-                )
-                model_radio = gr.Radio(
-                    choices=["Mobile (快速)", "Server (高精度)"],
-                    value="Mobile (快速)",
-                    label="模型类型",
-                    info="Server 精度更高但更慢",
                 )
                 load_model_btn = gr.Button("加载模型", variant="secondary", size="sm")
                 load_model_btn.click(
                     fn=load_model_ui,
-                    inputs=[device_radio, model_radio],
+                    inputs=[device_radio],
                     outputs=[status_text],
                 )
 

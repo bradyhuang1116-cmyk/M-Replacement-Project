@@ -1,0 +1,60 @@
+C:\Users\Brady Huang\miniconda3\envs\mitsubishi\lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (7.2.0)/charset_normalizer (3.4.6) doesn't match a supported version!
+  warnings.warn(
+[33mConnectivity check to the model hoster has been skipped because `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK` is enabled.[0m
+C:\Users\Brady Huang\Mitsubishi-Electric-Drawing-Replacement-Project\modules\region_detector.py:396: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+  _purple_ocr_local.cache[key] = PaddleOCR(**kwargs)
+ĞÅÏ¢: ÓÃÌá¹©µÄÄ£Ê½ÎŞ·¨ÕÒµ½ÎÄ¼ş¡£
+C:\Users\Brady Huang\miniconda3\envs\mitsubishi\lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:712: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+  warnings.warn(warning_message)
+[32mCreating model: ('PP-OCRv5_server_det', None)[0m
+[32mModel files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Brady Huang\.paddlex\official_models\PP-OCRv5_server_det`.[0m
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W0327 17:48:04.479300  9936 gpu_resources.cc:116] Please NOTE: device: 0, GPU Compute Capability: 12.0, Driver API Version: 13.2, Runtime API Version: 12.9
+[32mCreating model: ('PP-OCRv5_server_rec', None)[0m
+[32mModel files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Brady Huang\.paddlex\official_models\PP-OCRv5_server_rec`.[0m
+Traceback (most recent call last):
+  File "C:\Users\Brady Huang\Mitsubishi-Electric-Drawing-Replacement-Project\test_purple_diag.py", line 707, in <module>
+    diagnose_purple(f)
+  File "C:\Users\Brady Huang\Mitsubishi-Electric-Drawing-Replacement-Project\test_purple_diag.py", line 567, in diagnose_purple
+    ci, char, lcx = latin_chars[i]
+ValueError: not enough values to unpack (expected 3, got 2)
+ÕÒµ½ 1 ¸ö A216 ²âÊÔÎÄ¼ş
+
+
+============================================================
+  ×Ï¿òÕï¶Ï£¨±ß½çÔ¼Êø£©: YA116A216-1_Fh-ÍÑÃô.tif
+============================================================
+  ´ÖºòÑ¡[0]: "BX12" (Ô­ÎÄ: "[A2] (BX12]J1TEMO7Ä¨Ïû") conf=0.71
+  ´ÖºòÑ¡[1]: "YKOM0023" (Ô­ÎÄ: "YKOM0023") conf=0.90
+  ´ÖºòÑ¡[2]: "ZC08C02" (Ô­ÎÄ: "¼ş2BÔö¼Ó´úÂë£ºZC08C02") conf=0.87
+  ´ÖºòÑ¡[3]: "ZC08B01" (Ô­ÎÄ: "¼ş11´úÂëÔ­Îª£ºZC08B01.") conf=0.96
+  ´ÖºòÑ¡[4]: "X16" (Ô­ÎÄ: "¼ş12Ô­ÎªX16CE-04.") conf=0.90
+
+  ©¤©¤ ºòÑ¡[0]: "BX12" ©¤©¤
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_crop_0.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_enlarged_0.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_repaired_0.jpg
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "BX8" start_idx=1 end_idx=3 bbox=(237,0,481,278)
+    ×ó±ß½çÇåÀí: 237 ¡ú 190 (×óÁÚ "(", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    ÓÒ±ß½çÇåÀí: 718 ¡ú 745 (ÓÒÁÚ "1", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=190£©
+    CCÓÒ±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=745£©
+    OCR[0]: "(BX81" ¡ú match="BX81" prefix="B" conf=0.81 char_w=160.6
+      Ô­Ê¼bbox: (237,0,481,278)
+      Ô¼Êøºóbbox: (190,0,555,278)
+      ×ó±ß½ç: 190  ÓÒ±ß½ç: 745
+    OCR[1]: "1Æ·07Ä¨ÓĞ" conf=0.90 (ÎŞÆ¥Åä)
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "BX1" start_idx=1 end_idx=3 bbox=(250,264,607,350)
+    ×ó±ß½çÇåÀí: 250 ¡ú 188 (×óÁÚ "(", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    ÓÒ±ß½çÇåÀí: 857 ¡ú 937 (ÓÒÁÚ "2", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=188£©
+    CCÓÒ±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=937£©
+    OCR[2]: "(BX12)J1TEH07Ä¨Ïû" ¡ú match="BX12" prefix="B" conf=0.74 char_w=229.5
+      Ô­Ê¼bbox: (250,264,607,350)
+      Ô¼Êøºóbbox: (188,264,749,350)
+      ×ó±ß½ç: 188  ÓÒ±ß½ç: 937
+    OCR[3]: "(HX4)" conf=0.88 (ÎŞÆ¥Åä)
+    Latin×Ö·û: ['B', 'X', '8', '1']
+  ´¦ÀíÊ§°Ü: not enough values to unpack (expected 3, got 2)
+
+×Ï¿òÕï¶Ï²âÊÔÍê³É¡£

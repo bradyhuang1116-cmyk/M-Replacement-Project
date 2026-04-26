@@ -1,0 +1,178 @@
+C:\Users\Brady Huang\miniconda3\envs\mitsubishi\lib\site-packages\requests\__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (7.2.0)/charset_normalizer (3.4.6) doesn't match a supported version!
+  warnings.warn(
+[33mConnectivity check to the model hoster has been skipped because `PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK` is enabled.[0m
+C:\Users\Brady Huang\Mitsubishi-Electric-Drawing-Replacement-Project\modules\region_detector.py:396: UserWarning: `lang` and `ocr_version` will be ignored when model names or model directories are not `None`.
+  _purple_ocr_local.cache[key] = PaddleOCR(**kwargs)
+ĞÅÏ¢: ÓÃÌá¹©µÄÄ£Ê½ÎŞ·¨ÕÒµ½ÎÄ¼ş¡£
+C:\Users\Brady Huang\miniconda3\envs\mitsubishi\lib\site-packages\paddle\utils\cpp_extension\extension_utils.py:712: UserWarning: No ccache found. Please be aware that recompiling all source files may be required. You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md
+  warnings.warn(warning_message)
+[32mCreating model: ('PP-OCRv5_server_det', None)[0m
+[32mModel files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Brady Huang\.paddlex\official_models\PP-OCRv5_server_det`.[0m
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W0327 17:44:34.046998 38044 gpu_resources.cc:116] Please NOTE: device: 0, GPU Compute Capability: 12.0, Driver API Version: 13.2, Runtime API Version: 12.9
+[32mCreating model: ('PP-OCRv5_server_rec', None)[0m
+[32mModel files already exist. Using cached files. To redownload, please delete the directory manually: `C:\Users\Brady Huang\.paddlex\official_models\PP-OCRv5_server_rec`.[0m
+ÕÒµ½ 1 ¸ö A216 ²âÊÔÎÄ¼ş
+
+
+============================================================
+  ×Ï¿òÕï¶Ï£¨±ß½çÔ¼Êø£©: YA116A216-1_Fh-ÍÑÃô.tif
+============================================================
+  ´ÖºòÑ¡[0]: "BX12" (Ô­ÎÄ: "[A2] (BX12]J1TEMO7Ä¨Ïû") conf=0.71
+  ´ÖºòÑ¡[1]: "YKOM0023" (Ô­ÎÄ: "YKOM0023") conf=0.90
+  ´ÖºòÑ¡[2]: "ZC08C02" (Ô­ÎÄ: "¼ş2BÔö¼Ó´úÂë£ºZC08C02") conf=0.87
+  ´ÖºòÑ¡[3]: "ZC08B01" (Ô­ÎÄ: "¼ş11´úÂëÔ­Îª£ºZC08B01.") conf=0.96
+  ´ÖºòÑ¡[4]: "X16" (Ô­ÎÄ: "¼ş12Ô­ÎªX16CE-04.") conf=0.90
+
+  ©¤©¤ ºòÑ¡[0]: "BX12" ©¤©¤
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_crop_0.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_enlarged_0.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_repaired_0.jpg
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "BX8" start_idx=1 end_idx=3 bbox=(237,0,481,278)
+    ×ó±ß½çÇåÀí: 237 ¡ú 190 (×óÁÚ "(", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    ÓÒ±ß½çÇåÀí: 718 ¡ú 745 (ÓÒÁÚ "1", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=190£©
+    CCÓÒ±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=745£©
+    OCR[0]: "(BX81" ¡ú match="BX81" prefix="B" conf=0.81 char_w=160.6
+      Ô­Ê¼bbox: (237,0,481,278)
+      Ô¼Êøºóbbox: (190,0,555,278)
+      ×ó±ß½ç: 190  ÓÒ±ß½ç: 745
+    OCR[1]: "1Æ·07Ä¨ÓĞ" conf=0.90 (ÎŞÆ¥Åä)
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "BX1" start_idx=1 end_idx=3 bbox=(250,264,607,350)
+    ×ó±ß½çÇåÀí: 250 ¡ú 188 (×óÁÚ "(", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    ÓÒ±ß½çÇåÀí: 857 ¡ú 937 (ÓÒÁÚ "2", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=188£©
+    CCÓÒ±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=937£©
+    OCR[2]: "(BX12)J1TEH07Ä¨Ïû" ¡ú match="BX12" prefix="B" conf=0.74 char_w=229.5
+      Ô­Ê¼bbox: (250,264,607,350)
+      Ô¼Êøºóbbox: (188,264,749,350)
+      ×ó±ß½ç: 188  ÓÒ±ß½ç: 937
+    OCR[3]: "(HX4)" conf=0.88 (ÎŞÆ¥Åä)
+    CC¿òÆ¥Åäµ÷ÊÔ: text="(BX81"
+    Latin×Ö·û: [('B', 317), ('X', 477), ('8', 638), ('1', 798)]
+    CC¿ò[0] x=200 cx=282 w=164 ¡ú Æ¥Åä×Ö·û="B"
+    CC¿ò[1] x=396 cx=472 w=152 ¡ú Æ¥Åä×Ö·û="X"
+    CC¿ò[2] x=582 cx=660 w=157 ¡ú Æ¥Åä×Ö·û="8"
+    CC¿ò[3] x=786 cx=822 w=72 ¡ú Æ¥Åä×Ö·û="1"
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_cc_bounds_0.jpg
+    Ô¼Êøºórot: (161,110,18,15)
+    Ô­Ê¼rot:   (162,110,15,15)
+
+  ©¤©¤ ºòÑ¡[1]: "YKOM0023" ©¤©¤
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_crop_1.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_enlarged_1.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_repaired_1.jpg
+    OCR[0]: "Æ·24¤ÎÙØÊË˜”" conf=0.87 (ÎŞÆ¥Åä)
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "YKO" start_idx=0 end_idx=2 bbox=(883,375,887,459)
+    ÓÒ±ß½çÇåÀí: 1770 ¡ú 1417 (ÓÒÁÚ "M", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    ¿í¶È¹ıÕ­: 534 < 709 (Ô­Ê¼887¡Á70%)
+    ÓÒ±ß½çÀ©Õ¹ ¡ú 1592 (col_sum=129, ¿í¶È=709)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=883£©
+    CCÓÒ±ß½çÇĞÈë×Ö·û: x=1428, w=275 ¡ú Ó¦snapµ½ÓÒ±ßÔµ=1703
+    OCR[1]: "YKOM0023" ¡ú match="YKOM0023" prefix="Y" conf=0.94 char_w=295.6
+      Ô­Ê¼bbox: (883,375,887,459)
+      Ô¼Êøºóbbox: (883,375,709,459)
+      ×ó±ß½ç: 883  ÓÒ±ß½ç: 1417
+    OCR[2]: "Æ·" conf=0.44 (ÎŞÆ¥Åä)
+    CC¿òÆ¥Åäµ÷ÊÔ: text="YKOM0023"
+    Latin×Ö·û: [('Y', 1031), ('K', 1326), ('O', 1622), ('M', 1918), ('0', 2213), ('0', 2509), ('2', 2804), ('3', 3100)]
+    CC¿ò[0] x=926 cx=1169 w=487 ¡ú Æ¥Åä×Ö·û="Y"
+    CC¿ò[1] x=1428 cx=1565 w=275 ¡ú Æ¥Åä×Ö·û="K"
+    CC¿ò[2] x=1704 cx=1835 w=263 ¡ú Æ¥Åä×Ö·û="O"
+    CC¿ò[3] x=1991 cx=2108 w=235 ¡ú Æ¥Åä×Ö·û="M"
+    CC¿ò[4] x=2278 cx=2382 w=209 ¡ú Æ¥Åä×Ö·û="0"
+    CC¿ò[5] x=2575 cx=2668 w=187 ¡ú Æ¥Åä×Ö·û="0"
+    CC¿ò[6] x=2833 cx=3018 w=371 ¡ú Æ¥Åä×Ö·û="2"
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_cc_bounds_1.jpg
+    Ô¼Êøºórot: (133,614,15,17)
+    Ô­Ê¼rot:   (133,614,19,17)
+
+  ©¤©¤ ºòÑ¡[2]: "ZC08C02" ©¤©¤
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_crop_2.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_enlarged_2.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_repaired_2.jpg
+    OCR[0]: "±¾Îª°æ±¾" conf=0.82 (ÎŞÆ¥Åä)
+    OCR[1]: "Âë£º" conf=0.84 (ÎŞÆ¥Åä)
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "ZC0" start_idx=0 end_idx=2 bbox=(1026,337,812,436)
+    ÓÒ±ß½çÇåÀí: 1838 ¡ú 1919 (ÓÒÁÚ "8", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=1026£©
+    CCÓÒ±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=1919£©
+    OCR[2]: "ZC08C02." ¡ú match="ZC08C02" prefix="Z" conf=0.86 char_w=270.6
+      Ô­Ê¼bbox: (1026,337,812,436)
+      Ô¼Êøºóbbox: (1026,337,893,436)
+      ×ó±ß½ç: 1026  ÓÒ±ß½ç: 1919
+    CC¿òÆ¥Åäµ÷ÊÔ: text="ZC08C02."
+    Latin×Ö·û: [('Z', 1161), ('C', 1432), ('0', 1702), ('8', 1973), ('C', 2243), ('0', 2514), ('2', 2785)]
+    CC¿ò[0] x=1089 cx=1201 w=224 ¡ú Æ¥Åä×Ö·û="Z"
+    CC¿ò[1] x=1406 cx=1511 w=210 ¡ú Æ¥Åä×Ö·û="C"
+    CC¿ò[2] x=1713 cx=1811 w=196 ¡ú Æ¥Åä×Ö·û="0"
+    CC¿ò[3] x=1991 cx=2104 w=226 ¡ú Æ¥Åä×Ö·û="8"
+    CC¿ò[4] x=2281 cx=2375 w=188 ¡ú Æ¥Åä×Ö·û="C"
+    CC¿ò[5] x=2591 cx=2692 w=202 ¡ú Æ¥Åä×Ö·û="0"
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_cc_bounds_2.jpg
+    Ô¼Êøºórot: (191,760,19,15)
+    Ô­Ê¼rot:   (191,760,17,15)
+
+  ©¤©¤ ºòÑ¡[3]: "ZC08B01" ©¤©¤
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_crop_3.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_enlarged_3.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_repaired_3.jpg
+    OCR[0]: "±¾ÎªF" conf=0.99 (ÎŞÆ¥Åä)
+    OCR[1]: "¼º°æ±¾" conf=0.81 (ÎŞÆ¥Åä)
+    OCR[2]: "Ô­Îª£º" conf=0.98 (ÎŞÆ¥Åä)
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "ZC0" start_idx=0 end_idx=2 bbox=(1078,360,816,424)
+    ÓÒ±ß½çÇåÀí: 1894 ¡ú 1945 (ÓÒÁÚ "8", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=1078£©
+    CCÓÒ±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=1945£©
+    OCR[3]: "ZC08B01." ¡ú match="ZC08B01" prefix="Z" conf=0.97 char_w=272.1
+      Ô­Ê¼bbox: (1078,360,816,424)
+      Ô¼Êøºóbbox: (1078,360,867,424)
+      ×ó±ß½ç: 1078  ÓÒ±ß½ç: 1945
+    OCR[4]: "£¤" conf=0.39 (ÎŞÆ¥Åä)
+    OCR[5]: "A" conf=0.15 (ÎŞÆ¥Åä)
+    CC¿òÆ¥Åäµ÷ÊÔ: text="ZC08B01."
+    Latin×Ö·û: [('Z', 1214), ('C', 1486), ('0', 1758), ('8', 2030), ('B', 2302), ('0', 2575), ('1', 2847)]
+    CC¿ò[0] x=1147 cx=1257 w=220 ¡ú Æ¥Åä×Ö·û="Z"
+    CC¿ò[1] x=1455 cx=1549 w=189 ¡ú Æ¥Åä×Ö·û="C"
+    CC¿ò[2] x=1748 cx=1840 w=185 ¡ú Æ¥Åä×Ö·û="0"
+    CC¿ò[3] x=2018 cx=2126 w=217 ¡ú Æ¥Åä×Ö·û="8"
+    CC¿ò[4] x=2299 cx=2424 w=250 ¡ú Æ¥Åä×Ö·û="B"
+    CC¿ò[5] x=2617 cx=2720 w=206 ¡ú Æ¥Åä×Ö·û="0"
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_cc_bounds_3.jpg
+    Ô¼Êøºórot: (188,888,19,15)
+    Ô­Ê¼rot:   (188,888,18,15)
+
+  ©¤©¤ ºòÑ¡[4]: "X16" ©¤©¤
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_crop_4.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_enlarged_4.jpg
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_repaired_4.jpg
+    OCR[0]: "ÉúĞ§°æ±¾ÎªÉÏB°æ±¾" conf=0.82 (ÎŞÆ¥Åä)
+    Ç°Èı×Ö·ûÊ¶±ğ¿ò: "X16" start_idx=3 end_idx=5 bbox=(1233,337,739,422)
+    ×ó±ß½çÇåÀí: 1233 ¡ú 1281 (×óÁÚ "Îª", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    ÓÒ±ß½çÇåÀí: 1972 ¡ú 2011 (ÓÒÁÚ "C", ÕÒ×î½ü¿Õ°×¼äÏ¶)
+    CC×ó±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=1281£©
+    CCÓÒ±ß½ç: Î´ÇĞÈë×Ö·û£¨target_x=2011£©
+    OCR[1]: "2Ô­ÎªX16CE-04" ¡ú match="X16" prefix="X" conf=0.86 char_w=291.4
+      Ô­Ê¼bbox: (1233,337,739,422)
+      Ô¼Êøºóbbox: (1281,337,730,422)
+      ×ó±ß½ç: 1281  ÓÒ±ß½ç: 2011
+    CC¿òÆ¥Åäµ÷ÊÔ: text="2Ô­ÎªX16CE-04"
+    Latin×Ö·û: [('X', 1356), ('1', 1602), ('6', 1849), ('C', 2095), ('E', 2342), ('0', 2835), ('4', 3081)]
+    CC¿ò[0] x=1358 cx=1414 w=113 ¡ú Æ¥Åä×Ö·û="X"
+    CC¿ò[1] x=1540 cx=1639 w=199 ¡ú Æ¥Åä×Ö·û="1"
+    CC¿ò[2] x=1822 cx=1909 w=175 ¡ú Æ¥Åä×Ö·û="6"
+    CC¿ò[3] x=2085 cx=2167 w=164 ¡ú Æ¥Åä×Ö·û="C"
+    CC¿ò[4] x=2377 cx=2446 w=138 ¡ú Æ¥Åä×Ö·û="E"
+    CC¿ò[5] x=2618 cx=2719 w=203 ¡ú Æ¥Åä×Ö·û="0"
+    CC¿ò[6] x=2895 cx=3000 w=210 ¡ú Æ¥Åä×Ö·û="4"
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_cc_bounds_4.jpg
+    Ô¼Êøºórot: (171,982,16,16)
+    Ô­Ê¼rot:   (170,982,16,16)
+  [0] "BX81" Ô¼Êøºó: BBox(x=230, y=4670, w=31, h=37)  Ô­Ê¼: BBox(x=230, y=4674, w=31, h=31)
+  [1] "YKOM0023" Ô¼Êøºó: BBox(x=1287, y=4735, w=35, h=31)  Ô­Ê¼: BBox(x=1287, y=4727, w=35, h=39)
+  [2] "ZC08C02" Ô¼Êøºó: BBox(x=1593, y=4605, w=31, h=39)  Ô­Ê¼: BBox(x=1593, y=4609, w=31, h=35)
+  [3] "ZC08B01" Ô¼Êøºó: BBox(x=1861, y=4612, w=31, h=39)  Ô­Ê¼: BBox(x=1861, y=4614, w=31, h=37)
+  [4] "X16" Ô¼Êøºó: BBox(x=2058, y=4654, w=33, h=33)  Ô­Ê¼: BBox(x=2058, y=4656, w=33, h=33)
+    ±£´æ: diagnostic_output\purple_diag\YA116A216-1_Fh-ÍÑÃô_result.jpg
+
+×Ï¿òÕï¶Ï²âÊÔÍê³É¡£
