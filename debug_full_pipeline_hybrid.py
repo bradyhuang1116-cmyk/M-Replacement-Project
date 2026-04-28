@@ -61,7 +61,7 @@ from modules.text_replacer import (
 _default_input = r"C:\Users\Brady Huang\Downloads\TIF_Undo\YA070A191P7933-1_0-脱敏.tif"
 INPUT_FILE = sys.argv[1] if len(sys.argv) > 1 else _default_input
 _input_stem = os.path.splitext(os.path.basename(INPUT_FILE))[0]
-DEBUG_DIR = os.path.join(os.path.dirname(__file__), f"debug_pipeline_hybrid_{_input_stem}")
+DEBUG_DIR = os.path.join(os.path.dirname(__file__), "test_output", f"debug_pipeline_hybrid_{_input_stem}")
 os.makedirs(DEBUG_DIR, exist_ok=True)
 
 import glob as _glob

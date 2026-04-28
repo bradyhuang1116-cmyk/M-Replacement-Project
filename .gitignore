@@ -12,6 +12,7 @@ env/
 output/
 results/
 diagnostic_output/
+test_output/
 
 # 临时文件
 *.log
