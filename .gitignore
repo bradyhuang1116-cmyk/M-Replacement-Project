@@ -44,5 +44,8 @@ Mitsubishi-Electric-Drawing-Replacement-Project/
 .DS_Store
 Thumbs.db
 
+# VLM 模型文件（约1.8GB，不提交到仓库）
+models/PaddleOCR-VL-1.5/
+
 # Claude
 .claude/

@@ -5,6 +5,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FONT_PATH = os.path.join(BASE_DIR, "fonts", "dingliesongtypeface20241217-2.ttf")
 PDF_FONT_PATH = os.path.join(BASE_DIR, "fonts", "dingliesongtypeface20241217-2.ttf")
 
+# ── VLM OCR 引擎配置（PaddleOCR-VL-1.5 via vLLM HTTP）────────────
+VLLM_BASE_URL = "http://localhost:8080/v1"
+VLLM_MODEL_NAME = "PaddleOCR-VL-1.5-0.9B"
+
 # 默认替换前缀
 DEFAULT_PREFIXES = ["Y"]
 NEW_PREFIX = "H"
@@ -31,41 +35,24 @@ FUZZY_DIGIT_MAP = {
     '(': '0', ')': '0',
 }
 
-# OCR 配置
+# OCR 配置（保留 lang 常量供下游兼容）
 OCR_LANG_EN = "en"
 OCR_LANG_CH = "ch"
 
-# OCR 模型配置（统一使用 server 模型）
 OCR_MODE = {
-    "device": "cpu",        # "cpu" 或 "gpu"
-    "model_type": "server",
-}
-
-# 模型名称映射
-OCR_MODEL_NAMES = {
-    "server": {
-        "det": "PP-OCRv5_server_det",
-        "rec": "PP-OCRv5_server_rec",
-    },
+    "device": "gpu",
 }
 
 
-def set_ocr_mode(device: str = "cpu", model_type: str = "server"):
-    """切换 OCR 运行模式。切换后需调用 clear_ocr_cache() 重建实例。"""
+def set_ocr_mode(device: str = "gpu", model_type: str = "server"):
+    """保留接口兼容。VLM 通过 vLLM HTTP 服务器运行。"""
     OCR_MODE["device"] = device.lower()
-    OCR_MODE["model_type"] = "server"  # 始终使用 server
-
-
-def get_ocr_model_names() -> tuple[str, str]:
-    """返回当前模式下的 (det_model, rec_model)。"""
-    names = OCR_MODEL_NAMES["server"]
-    return names["det"], names["rec"]
 
 # ── 关键词锚定检测配置 ─────────────────────────────────────────
 KEYWORD_ANCHORS = {
     "material_code": {
         "keywords": ["MATERIAL CODE", "MATERIALCODE", "MATERIAL",
-                     "材料代号", "零部件图号", "PARTS LIST"],
+                     "材料代号", "零部件图号", "PARTS LIST", "代号"],
         "fuzzy_threshold": 0.70,
     },
 }

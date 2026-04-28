@@ -9,56 +9,28 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from config import Y_PATTERN, FONT_PATH, OCR_LANG_EN, OCR_LANG_CH, DEFAULT_REGIONS, make_pattern, DEFAULT_PREFIXES, OCR_MODE, get_ocr_model_names
+from config import Y_PATTERN, FONT_PATH, OCR_LANG_EN, OCR_LANG_CH, DEFAULT_REGIONS, make_pattern, DEFAULT_PREFIXES, OCR_MODE
 from modules.region_detector import BBox, _pct_to_px, _detect_horizontal_lines, _detect_horizontal_lines_adaptive, _ocr_region
 
 logger = logging.getLogger(__name__)
 
-# ── OCR 引擎（线程本地缓存，支持多线程并行）──────────────────────
+# ── OCR 引擎（VLM 单例，线程安全）──────────────────────────────
 
-import threading
+from modules.vlm_ocr_engine import get_vlm_engine, clear_vlm_engine
 import gc
-_ocr_local = threading.local()
 
 
 def clear_ocr_cache():
-    """清除所有线程的 OCR 缓存并释放内存。
-    在每次新任务开始时调用，避免旧实例残留导致问题。"""
-    if hasattr(_ocr_local, 'cache'):
-        _ocr_local.cache.clear()
+    """释放 OCR 引擎缓存（v5 + VLM）。"""
+    from modules.region_detector import _v5_cache
+    _v5_cache.clear()
     gc.collect()
-    logger.info("OCR 缓存已清除")
+    logger.info("OCR 缓存已清除（v5 + VLM）")
 
 
 def _get_ocr(lang: str = "en"):
-    """获取当前线程的 PaddleOCR v5 实例（线程本地缓存）。
-
-    每个线程独立创建并缓存 PaddleOCR 实例，避免跨线程共享 predictor。
-    根据 config.OCR_MODE 选择 GPU/CPU 和 mobile/server 模型。
-    """
-    det_model, rec_model = get_ocr_model_names()
-    use_gpu = OCR_MODE["device"] == "gpu"
-    # 缓存 key 包含模式信息，模式切换后自动重建
-    key = f"{lang}_{OCR_MODE['device']}_{OCR_MODE['model_type']}"
-    if not hasattr(_ocr_local, 'cache'):
-        _ocr_local.cache = {}
-    if key not in _ocr_local.cache:
-        from paddleocr import PaddleOCR
-        kwargs = dict(
-            lang=lang,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            text_detection_model_name=det_model,
-            text_recognition_model_name=rec_model,
-            text_det_unclip_ratio=1.6,
-        )
-        if use_gpu:
-            kwargs["device"] = "gpu:0"
-        logger.info(f"创建 OCR 实例: lang={lang}, device={OCR_MODE['device']}, "
-                    f"model={OCR_MODE['model_type']} ({det_model})")
-        _ocr_local.cache[key] = PaddleOCR(**kwargs)
-    return _ocr_local.cache[key]
+    """返回 VLM OCR 引擎（lang 参数保留兼容，VLM 本身多语言）。"""
+    return get_vlm_engine()
 
 
 # ── OCR 结果解析 ──────────────────────────────────────────────
@@ -1718,5 +1690,27 @@ def replace_in_all_regions(
 
         all_replacements.extend(repls)
         logger.info(f"  区域 {region_name}: {len(repls)} 处替换")
+
+    # ── 工厂注意部分替换 ──
+    fn_codes = regions.get("factory_note_codes", [])
+    if fn_codes:
+        logger.info(f"处理工厂注意部分: {len(fn_codes)} 个编号")
+        for fc in fn_codes:
+            code = fc["code"]
+            bbox = fc["bbox"]
+            new_text = "H" + code
+            draw_x, draw_y = bbox.x, bbox.y
+            draw_w, draw_h = max(bbox.w, 1), max(bbox.h, 1)
+            cv2.rectangle(
+                modified, (draw_x, draw_y),
+                (draw_x + draw_w, draw_y + draw_h),
+                (255, 255, 255), -1,
+            )
+            text_img = _render_text_distributed(new_text, draw_w, draw_h)
+            pil_modified = Image.fromarray(modified)
+            pil_modified.paste(text_img, (draw_x, draw_y), text_img)
+            modified = np.array(pil_modified)
+            all_replacements.append((code, new_text))
+            logger.info(f"  Factory Note: {code} → {new_text}")
 
     return modified, all_replacements
