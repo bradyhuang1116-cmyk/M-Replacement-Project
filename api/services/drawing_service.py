@@ -4,6 +4,7 @@ import time
 import shutil
 from pathlib import Path
 from fastapi import UploadFile
+from config import DEFAULT_PREFIXES
 from modules.batch_processor import process_single_file
 
 class DrawingService:
@@ -26,7 +27,8 @@ class DrawingService:
         result = process_single_file(
             str(file_path),
             str(self.output_dir),
-            generate_debug=False
+            generate_debug=False,
+            prefixes=DEFAULT_PREFIXES,
         )
 
         processing_time = time.time() - start_time

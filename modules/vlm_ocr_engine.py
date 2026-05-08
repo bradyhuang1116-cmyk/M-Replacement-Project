@@ -15,16 +15,39 @@ logger = logging.getLogger(__name__)
 _LOC_RE = re.compile(r'([^\n<]+?)(<\|LOC_\d+\|>(?:<\|LOC_\d+\|>){7})')
 _LOC_NUM_RE = re.compile(r'<\|LOC_(\d+)\|>')
 
+
+def _clean_latex(text: str) -> str:
+    if "\\" not in text:
+        return text
+    s = text
+    s = re.sub(r"\\\(|\\\)|\\\[|\\\]", "", s)
+    s = re.sub(r"_\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\^\{([^}]*)\}", r"\1", s)
+    s = re.sub(r"\\[a-zA-Z]+", "", s)
+    s = re.sub(r"[{}]", "", s)
+    return s.strip()
+
 SPOTTING_UPSCALE_THRESHOLD = 1500
 
 
 def parse_spotting_output(raw: str, img_w: int, img_h: int) -> list[dict]:
     items = []
+    seen = set()
+    repeat_count = 0
     for m in _LOC_RE.finditer(raw):
-        text = m.group(1).strip()
+        text = _clean_latex(m.group(1).strip())
         locs = [int(x) for x in _LOC_NUM_RE.findall(m.group(2))]
         if len(locs) != 8:
             continue
+        key = (text, tuple(locs))
+        if key in seen:
+            repeat_count += 1
+            if repeat_count >= 3:
+                logger.warning(f"VLM 重复输出截断: 已去重 {repeat_count} 条, 保留 {len(items)} 条")
+                break
+            continue
+        seen.add(key)
+        repeat_count = 0
         xs = [locs[i] / 1000 * img_w for i in (0, 2, 4, 6)]
         ys = [locs[i] / 1000 * img_h for i in (1, 3, 5, 7)]
         x1, y1 = int(min(xs)), int(min(ys))
@@ -61,11 +84,19 @@ def _vllm_chat(base_url: str, model_name: str,
         }],
         "max_tokens": max_tokens,
         "temperature": 0,
+        "repetition_penalty": 1.05,
     }
-    resp = requests.post(
-        f"{base_url}/chat/completions", json=payload, timeout=120)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    for attempt in range(3):
+        try:
+            resp = requests.post(
+                f"{base_url}/chat/completions", json=payload, timeout=300)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.ReadTimeout:
+            if attempt < 2:
+                logger.warning(f"VLM 请求超时，重试 ({attempt+1}/2)")
+                continue
+            raise
 
 
 class VlmOcrEngine:

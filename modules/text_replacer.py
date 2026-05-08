@@ -934,17 +934,17 @@ def replace_y_in_region_pixel(
             replacements.append((old_text, new_text))
             logger.info(f"  替换(预检测): {old_text} → {new_text}")
 
-        # 批量粘贴文字（1次 numpy→PIL→numpy，而非 N 次）
+        # 先恢复删除线（在白底之上）
+        for strike_mask, gx, gy_fill in strike_restore_data:
+            _restore_protected_pixels(modified, orig_ref, strike_mask, gx, gy_fill)
+            logger.info(f"  删除线已恢复: ({gx}, {gy_fill})")
+
+        # 再批量粘贴文字（在删除线之上，文字不被遮挡）
         if text_paste_data:
             pil_modified = Image.fromarray(modified)
             for text_img, px, py in text_paste_data:
                 pil_modified.paste(text_img, (px, py), text_img)
             modified = np.array(pil_modified)
-
-        # 批量恢复删除线（在文字之上）
-        for strike_mask, gx, gy_fill in strike_restore_data:
-            _restore_protected_pixels(modified, orig_ref, strike_mask, gx, gy_fill)
-            logger.info(f"  删除线已恢复: ({gx}, {gy_fill})")
 
     elif use_grid_alignment and row_ys and len(row_ys) >= 2:
         # ── 网格对齐模式：逐格扫描 ──
@@ -991,13 +991,20 @@ def replace_y_in_region_pixel(
             # 独立 OCR 该单元格（内部自动检测并去除删除线）
             items, has_strikethrough = _ocr_cell(cell_roi, ocr)
 
-            # 红框内只需首字母匹配前缀即可
+            # 红框内只需首字母匹配前缀即可（T→Y 模糊修正）
             matched_text = None
             prefix_set = {p.upper() for p in prefixes}
             for _poly, text, _score in items:
                 text_ns = text.replace(" ", "").strip()
-                if text_ns and text_ns[0].upper() in prefix_set:
+                if not text_ns:
+                    continue
+                first = text_ns[0].upper()
+                if first in prefix_set:
                     matched_text = text_ns
+                    break
+                if first == 'T' and 'Y' in prefix_set and len(text_ns) >= 5:
+                    matched_text = 'Y' + text_ns[1:]
+                    logger.info(f"  红框T→Y修正: '{text_ns}' → '{matched_text}'")
                     break
 
             if not matched_text:
@@ -1030,7 +1037,12 @@ def replace_y_in_region_pixel(
                 -1,
             )
 
-            # 渲染新文字
+            # 先恢复删除线（在白底之上）
+            if strike_mask is not None and np.any(strike_mask):
+                _restore_protected_pixels(modified, image, strike_mask, gx, gy_fill)
+                logger.info(f"  删除线已恢复: cell_top={cell_top}")
+
+            # 再渲染新文字（在删除线之上，文字不被遮挡）
             render_w = max(safe_w - 2 * FILL_MARGIN, 6)
             render_h = max(fill_h - 2 * FILL_MARGIN, 6)
             text_img = _render_text_distributed(new_text, render_w, render_h)
@@ -1040,11 +1052,6 @@ def replace_y_in_region_pixel(
             pil_modified = Image.fromarray(modified)
             pil_modified.paste(text_img, (paste_x, paste_y), text_img)
             modified = np.array(pil_modified)
-
-            # 恢复删除线到新文字上方
-            if strike_mask is not None and np.any(strike_mask):
-                _restore_protected_pixels(modified, image, strike_mask, gx, gy_fill)
-                logger.info(f"  删除线已恢复: cell_top={cell_top}")
 
             cyan_boxes.append(BBox(bbox.x, gy_fill, bbox.w, fill_h))
             replacements.append((old_text, new_text))
@@ -1289,6 +1296,8 @@ def _make_strike_mask(chunk_gray: np.ndarray, strike_ys_local: list[int],
 def detect_cyan_boxes(
     image: np.ndarray, bbox: BBox, row_ys: list[int],
     pattern: str = None, prefixes: list[str] = None,
+    return_all_ocr: bool = False,
+    debug_dir: str = None,
 ) -> list:
     """分片 OCR 扫描红框内单元格，匹配首字母则生成青色框。
 
@@ -1313,16 +1322,24 @@ def detect_cyan_boxes(
     binary = _preprocess_for_table(box_gray)
     all_lines = _detect_all_hlines_projection(binary, min_line_ratio=0.8)
 
+    if debug_dir:
+        os.makedirs(debug_dir, exist_ok=True)
+        Image.fromarray(box_roi).save(os.path.join(debug_dir, "cyan_00_red_roi.jpg"), quality=90)
+        lines_vis = cv2.cvtColor(box_gray, cv2.COLOR_GRAY2RGB)
+        for ly in all_lines:
+            cv2.line(lines_vis, (0, ly), (box_w, ly), (255, 0, 0), 2)
+        Image.fromarray(lines_vis).save(os.path.join(debug_dir, "cyan_01_all_hlines.jpg"), quality=90)
+
     if len(all_lines) < 2:
         logger.warning("  投影法检测行线不足，跳过青框生成")
-        return []
+        return [], []
 
     # ── 确定单元格高度（>50px 间距的众数）──
     gaps = [all_lines[i + 1] - all_lines[i] for i in range(len(all_lines) - 1)]
     large_gaps = [g for g in gaps if g > 50]
     if not large_gaps:
         logger.warning("  无有效大间距，跳过青框生成")
-        return []
+        return [], []
     rounded = [round(g / 5) * 5 for g in large_gaps]
     cell_height = Counter(rounded).most_common(1)[0][0]
 
@@ -1332,6 +1349,14 @@ def detect_cyan_boxes(
     )
     logger.info(f"  投影法: {len(all_lines)} 条线 → 行线 {len(table_lines)}, "
                 f"删除线 {len(strike_lines)}, cell_h={cell_height}px")
+
+    if debug_dir:
+        grid_vis = cv2.cvtColor(box_gray, cv2.COLOR_GRAY2RGB)
+        for ly in table_lines:
+            cv2.line(grid_vis, (0, ly), (box_w, ly), (0, 200, 0), 2)
+        for ly in strike_lines:
+            cv2.line(grid_vis, (0, ly), (box_w, ly), (0, 0, 255), 2)
+        Image.fromarray(grid_vis).save(os.path.join(debug_dir, "cyan_02_grid_classify.jpg"), quality=90)
 
     # ── 分片（仅用行线，带重叠）──
     chunk_step = max(CHUNK_SIZE - OVERLAP_ROWS, 1)
@@ -1372,6 +1397,7 @@ def detect_cyan_boxes(
 
     cyan_boxes = []
     cyan_box_data = []
+    all_ocr_results = []
     matched_cell_ys = set()
 
     for ci, (chunk_top, chunk_bot, chunk_tbl_lines) in enumerate(chunks):
@@ -1412,13 +1438,53 @@ def detect_cyan_boxes(
         result = ocr.predict(scaled)
         items = _parse_ocr_results(result)
 
+        if debug_dir:
+            Image.fromarray(chunk_roi).save(
+                os.path.join(debug_dir, f"cyan_10_chunk{ci}_roi.jpg"), quality=90)
+            Image.fromarray(scaled).save(
+                os.path.join(debug_dir, f"cyan_11_chunk{ci}_scaled.jpg"), quality=90)
+            ocr_vis = scaled.copy()
+            for poly, text, score in items:
+                if poly is None or len(poly) < 4:
+                    continue
+                pts = np.array(poly, dtype=np.int32)
+                cv2.polylines(ocr_vis, [pts], True, (0, 255, 0), 2)
+                cv2.putText(ocr_vis, text.replace(" ", ""),
+                            (int(pts[0][0]), int(pts[0][1]) - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            Image.fromarray(ocr_vis).save(
+                os.path.join(debug_dir, f"cyan_12_chunk{ci}_ocr_result.jpg"), quality=90)
+
         # 坐标映射 + 匹配
         for poly, text, score in items:
             if poly is None or len(poly) < 4:
                 continue
             text_ns = text.replace(" ", "").strip()
-            if not text_ns or text_ns[0].upper() not in prefix_set:
+            if not text_ns:
                 continue
+
+            if return_all_ocr:
+                xs = [pt[0] / sf for pt in poly]
+                ys = [pt[1] / sf for pt in poly]
+                all_ocr_results.append({
+                    "abs_bbox": BBox(
+                        bbox.x + int(min(xs)),
+                        bbox.y + chunk_top + int(min(ys)),
+                        int(max(xs) - min(xs)),
+                        int(max(ys) - min(ys)),
+                    ),
+                    "text": text_ns,
+                    "score": score,
+                    "matched": text_ns[0].upper() in prefix_set,
+                })
+
+            first = text_ns[0].upper()
+            if first not in prefix_set:
+                if first == 'T' and 'Y' in prefix_set and len(text_ns) >= 5:
+                    text_ns = 'Y' + text_ns[1:]
+                    logger.info(f"  青框T→Y修正: '{text}' → '{text_ns}'")
+                else:
+                    continue
 
             ys_poly = [pt[1] / sf for pt in poly]
             text_cy = sum(ys_poly) / len(ys_poly)
@@ -1445,6 +1511,8 @@ def detect_cyan_boxes(
 
     logger.info(f"  分片OCR: {len(chunks)} 片, {len(cyan_boxes)} 个青框, "
                 f"删除线 {len(strike_lines)} 条")
+    if return_all_ocr:
+        return cyan_boxes, cyan_box_data, all_ocr_results
     return cyan_boxes, cyan_box_data
 
 
@@ -1511,6 +1579,8 @@ def verify_output(
     for region_name, bbox in regions.items():
         if region_name.startswith("_") or bbox is None:
             continue
+        if isinstance(bbox, list) or not hasattr(bbox, "crop"):
+            continue
         items = _ocr_region_with_scaling(img, bbox)
         hy_count = sum(1 for _, text, _ in items if hy_pattern.search(text))
         total_hy += hy_count
@@ -1555,11 +1625,10 @@ def replace_in_all_regions(
     metadata = regions.get("_metadata", {})
     green_text = metadata.get("bottom_right_text")   # 检测时OCR
     orange_text = metadata.get("top_left_text")       # 检测时OCR
-    red_text = None  # 红框替换后从 repls 中提取
 
     green_bbox = regions.get("bottom_right_number")
     orange_bbox = regions.get("top_left_number")
-    green_orange_result = None  # 四方投票结果，绿框处理时设置，橙框复用
+    green_orange_result = None  # 三方投票结果，绿框处理时设置，橙框复用
 
     prefixes = prefixes or DEFAULT_PREFIXES
     prefixes_upper = [p.upper() for p in prefixes]
@@ -1626,38 +1695,32 @@ def replace_in_all_regions(
             # 存储青色框供 debug 绘图使用
             regions.setdefault("_metadata", {})["cyan_boxes"] = cyan_boxes
 
-            # 从红框替换结果中提取 red_text
-            if repls:
-                red_text = repls[0][0]  # old_y
-                logger.info(f"  红框提取文本: '{red_text}'")
-
         elif region_name in ("bottom_right_number", "top_left_number"):
             # 首次遇到绿/橙框时执行五方校验
             if region_name == "bottom_right_number":
-                # 四方投票（绿框、橙框、红框、文件名）
+                # 三方投票（绿框、橙框、文件名）— 红框不参与
                 g = _valid_prefix(green_text)
                 o = _valid_prefix(orange_text)
-                r = _valid_prefix(red_text)
                 f = _valid_prefix(filename_y)
-                logger.info(f"  四方校验: green={g}, orange={o}, red={r}, filename={f}")
+                logger.info(f"  三方校验: green={g}, orange={o}, filename={f}")
 
-                candidates = [x for x in [g, o, r, f] if x]
+                candidates = [x for x in [g, o, f] if x]
                 source_y = None
 
                 if not candidates:
-                    logger.warning("  四方校验：无有效候选文本，跳过绿/橙框替换")
+                    logger.warning("  三方校验：无有效候选文本，跳过绿/橙框替换")
                 elif len(set(candidates)) == 1:
                     source_y = candidates[0]
-                    logger.info(f"  四方校验：全部一致 → '{source_y}'")
+                    logger.info(f"  三方校验：全部一致 → '{source_y}'")
                 else:
                     counts = Counter(candidates)
                     top_text, top_count = counts.most_common(1)[0]
                     if top_count >= 2:
                         source_y = top_text
-                        logger.info(f"  四方校验：多数一致({top_count}/{len(candidates)}) → '{source_y}'")
+                        logger.info(f"  三方校验：多数一致({top_count}/{len(candidates)}) → '{source_y}'")
                     else:
-                        source_y = g or o or r or f
-                        logger.info(f"  四方校验：全不同，优先绿/橙/红/文件名 → '{source_y}'")
+                        source_y = f or g or o
+                        logger.info(f"  三方校验：全不同，优先文件名/绿/橙 → '{source_y}'")
 
                 # 保存结果供橙框复用
                 if source_y:
@@ -1695,9 +1758,35 @@ def replace_in_all_regions(
     fn_codes = regions.get("factory_note_codes", [])
     if fn_codes:
         logger.info(f"处理工厂注意部分: {len(fn_codes)} 个编号")
+
+        replaced_regions = []
+        red_bbox = regions.get("material_code_column")
+        if red_bbox:
+            replaced_regions.append(red_bbox)
+        if green_bbox:
+            replaced_regions.append(green_bbox)
+        if orange_bbox:
+            replaced_regions.append(orange_bbox)
+
+        def _bbox_overlap(a, b):
+            ox = max(0, min(a.x2, b.x2) - max(a.x, b.x))
+            oy = max(0, min(a.y2, b.y2) - max(a.y, b.y))
+            return ox * oy
+
         for fc in fn_codes:
             code = fc["code"]
             bbox = fc["bbox"]
+            fn_area = max(bbox.w * bbox.h, 1)
+            skip = False
+            for rb in replaced_regions:
+                overlap = _bbox_overlap(bbox, rb)
+                if overlap / fn_area > 0.3:
+                    logger.info(f"  Factory Note: 跳过 {code}，与已替换区域重叠 {overlap/fn_area:.0%}")
+                    skip = True
+                    break
+            if skip:
+                continue
+
             new_text = "H" + code
             draw_x, draw_y = bbox.x, bbox.y
             draw_w, draw_h = max(bbox.w, 1), max(bbox.h, 1)

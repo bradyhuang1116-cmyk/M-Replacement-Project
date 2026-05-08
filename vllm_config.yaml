@@ -1,0 +1,9 @@
+# PaddleOCR-VL-1.5 vLLM 后端配置
+# 参考: https://docs.vllm.ai/projects/recipes/en/latest/PaddlePaddle/PaddleOCR-VL.html
+
+gpu-memory-utilization: 0.30
+max-model-len: 8192
+max-num-batched-tokens: 16384
+enforce-eager: true
+enable-prefix-caching: false
+mm-processor-cache-gb: 0

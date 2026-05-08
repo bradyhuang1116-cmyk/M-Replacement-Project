@@ -1,11 +1,9 @@
-"""全流程调试脚本（混合模式：红框v5定位 + 绿/橙框VLM检测）
-   遍历 TIF_Undo 目录下所有 TIF 文件"""
+"""调试脚本：仅测试 C070 文件"""
 import os
 import sys
 import logging
 import subprocess
-import glob as _glob
-
+    
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
@@ -13,10 +11,7 @@ os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
 
-
-# ── GPU 显存监控工具 ──────────────────────────────────────────
 _gpu_peak_mib = 0.0
-
 
 def _get_gpu_mem():
     try:
@@ -31,7 +26,6 @@ def _get_gpu_mem():
     except Exception:
         return 0, 0, 0
 
-
 def _log_gpu(tag: str):
     global _gpu_peak_mib
     used, total, free = _get_gpu_mem()
@@ -39,25 +33,23 @@ def _log_gpu(tag: str):
         _gpu_peak_mib = used
     logger.info(f"  [GPU] {tag}: {used:.0f}/{total:.0f} MiB (空闲 {free:.0f}), 峰值 {_gpu_peak_mib:.0f} MiB")
 
-
 import cv2
-import numpy as np
 from PIL import Image
 
 from config import DEFAULT_PREFIXES, make_pattern
 from modules.file_ingestion import load_file
 from modules.region_detector import (
-    detect_all_regions, draw_regions_debug, _enhance_vertical_lines,
-    BBox,
+    detect_all_regions, _enhance_vertical_lines,
 )
 from modules.text_replacer import (
     detect_cyan_boxes, detect_row_ys_for_red_box,
 )
 
-# ── 输入：目录或单个文件 ──
+# ── 输入 ──
 _default_dir = r"C:\Users\Brady Huang\Downloads\TIF_Undo"
-
 INPUT_PATH = sys.argv[1] if len(sys.argv) > 1 else _default_dir
+
+KEYWORDS = None  # 全部 Y 字头
 
 if os.path.isdir(INPUT_PATH):
     INPUT_FILES = sorted([
@@ -70,17 +62,24 @@ else:
     INPUT_FILES = [INPUT_PATH]
 
 if not INPUT_FILES:
-    logger.error(f"未找到 tif 文件: {INPUT_PATH}")
+    logger.error(f"未找到 Y 字头 TIF 文件: {INPUT_PATH}")
     sys.exit(1)
 
-logger.info(f"共 {len(INPUT_FILES)} 个文件待测试")
+logger.info(f"共 {len(INPUT_FILES)} 个文件待测试: {[os.path.basename(f) for f in INPUT_FILES]}")
 
 DEBUG_BASE = os.path.join(os.path.dirname(__file__), "test_output", "debug_pipeline_hybrid")
 os.makedirs(DEBUG_BASE, exist_ok=True)
 
-prefixes = DEFAULT_PREFIXES + ["X"]
+prefixes = DEFAULT_PREFIXES
 
-# ── GPU 初始状态 ──
+from modules.docker_manager import ensure_vlm_ready
+logger.info("正在启动 VLM 服务...")
+ok, msg = ensure_vlm_ready()
+if not ok:
+    logger.error(f"VLM 服务启动失败: {msg}")
+    sys.exit(1)
+logger.info(f"VLM 服务就绪: {msg}")
+
 logger.info("=" * 60)
 _log_gpu("启动前")
 
@@ -89,28 +88,18 @@ _total_fail = 0
 
 for _file_idx, INPUT_FILE in enumerate(INPUT_FILES):
     _input_stem = os.path.splitext(os.path.basename(INPUT_FILE))[0]
-    DEBUG_DIR = os.path.join(DEBUG_BASE, _input_stem)
-    os.makedirs(DEBUG_DIR, exist_ok=True)
-
-    for _f in _glob.glob(os.path.join(DEBUG_DIR, "*.jpg")):
-        os.remove(_f)
 
     logger.info("=" * 60)
     logger.info(f"[{_file_idx+1}/{len(INPUT_FILES)}] {os.path.basename(INPUT_FILE)}")
 
     try:
-        # ── 1. 加载文件 ──
         logger.info("Step 1: 加载文件")
         img_array, meta = load_file(INPUT_FILE)
         logger.info(f"  尺寸: {img_array.shape[1]}x{img_array.shape[0]}")
-        Image.fromarray(img_array).save(os.path.join(DEBUG_DIR, "01_original.jpg"), quality=90)
 
-        # ── 2. 竖线增强 ──
         logger.info("Step 2: 竖线增强")
         enhanced = _enhance_vertical_lines(img_array)
-        Image.fromarray(enhanced).save(os.path.join(DEBUG_DIR, "02_enhanced.jpg"), quality=90)
 
-        # ── 3. 区域检测 ──
         logger.info("Step 3: 区域检测（红/绿/橙框 + 工厂注意）")
         _log_gpu("区域检测前")
         regions = detect_all_regions(enhanced, prefixes=prefixes)
@@ -125,10 +114,9 @@ for _file_idx, INPUT_FILE in enumerate(INPUT_FILES):
         img_h, img_w = img_array.shape[:2]
         metadata = regions.get("_metadata", {})
 
-        # ── 4. 青框检测（红框内 OCR + 匹配） ──
+        # ── 4. 青框检测 ──
         red_bbox = regions.get("material_code_column")
         cyan_boxes = []
-        all_ocr_results = []
         if red_bbox:
             logger.info("Step 4: 青框检测")
             _log_gpu("青框检测前")
@@ -139,21 +127,19 @@ for _file_idx, INPUT_FILE in enumerate(INPUT_FILES):
             p_chars = "".join(p.upper() for p in (prefixes or ["Y"]))
             red_pattern = (rf"\b[{p_chars}][A-Z0-9\-]{{8}}\b" if len(p_chars) > 1
                            else rf"\b{p_chars}[A-Z0-9\-]{{8}}\b")
-            cyan_boxes, cyan_box_data, all_ocr_results = detect_cyan_boxes(
+            cyan_boxes, cyan_box_data = detect_cyan_boxes(
                 enhanced, red_bbox, row_ys,
                 pattern=red_pattern, prefixes=prefixes,
-                return_all_ocr=True,
             )
             _log_gpu("青框检测后")
-            logger.info(f"  青框数量: {len(cyan_boxes)}, OCR总识别: {len(all_ocr_results)}")
+            logger.info(f"  青框数量: {len(cyan_boxes)}")
         else:
             logger.info("Step 4: 跳过（未检测到红框）")
 
-        # ── 5. 综合可视化：所有框叠加到一张图 ──
-        logger.info("Step 5: 生成综合可视化")
+        # ── 03. 综合可视化 ──
+        logger.info("生成 03_all_regions")
         combined = img_array.copy()
 
-        # 区域框颜色映射
         region_colors = {
             "material_code_column": ((255, 0, 0), "Red"),
             "bottom_right_number":  ((0, 200, 0), "Green"),
@@ -166,57 +152,19 @@ for _file_idx, INPUT_FILE in enumerate(INPUT_FILES):
                 cv2.putText(combined, label, (rb.x + 5, rb.y - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-        # 青框
         for cb in cyan_boxes:
             cv2.rectangle(combined, (cb.x, cb.y), (cb.x2, cb.y2), (0, 255, 255), 2)
 
         Image.fromarray(combined).save(
-            os.path.join(DEBUG_DIR, "03_all_regions.jpg"), quality=90)
-
-        # ── 6. OCR 全识别结果可视化 ──
-        logger.info("Step 6: OCR 全识别结果可视化")
-        ocr_vis = img_array.copy()
-
-        # 红框内 OCR 结果
-        if red_bbox:
-            cv2.rectangle(ocr_vis, (red_bbox.x, red_bbox.y),
-                          (red_bbox.x2, red_bbox.y2), (255, 0, 0), 2)
-        for item in all_ocr_results:
-            ob = item["abs_bbox"]
-            txt = item["text"]
-            matched = item["matched"]
-            color = (0, 255, 255) if matched else (180, 180, 180)
-            cv2.rectangle(ocr_vis, (ob.x, ob.y), (ob.x2, ob.y2), color, 2)
-            cv2.putText(ocr_vis, txt, (ob.x + 2, ob.y - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
-
-        # 绿框 OCR 结果
-        gr_bbox = regions.get("bottom_right_number")
-        gr_text = metadata.get("bottom_right_text", "")
-        if gr_bbox:
-            cv2.rectangle(ocr_vis, (gr_bbox.x, gr_bbox.y), (gr_bbox.x2, gr_bbox.y2), (0, 200, 0), 2)
-            cv2.putText(ocr_vis, gr_text, (gr_bbox.x + 5, gr_bbox.y - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2)
-
-        # 橙框 OCR 结果
-        or_bbox = regions.get("top_left_number")
-        or_text = metadata.get("top_left_text", "")
-        if or_bbox:
-            cv2.rectangle(ocr_vis, (or_bbox.x, or_bbox.y), (or_bbox.x2, or_bbox.y2), (255, 165, 0), 2)
-            cv2.putText(ocr_vis, or_text, (or_bbox.x + 5, or_bbox.y - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
-
-        Image.fromarray(ocr_vis).save(
-            os.path.join(DEBUG_DIR, "04_ocr_all_detections.jpg"), quality=90)
+            os.path.join(DEBUG_BASE, f"{_input_stem}_03.jpg"), quality=90)
 
         _total_ok += 1
-        logger.info(f"  OK: {len(os.listdir(DEBUG_DIR))} 个调试图")
+        logger.info(f"  OK")
 
     except Exception as e:
         _total_fail += 1
         logger.error(f"  FAIL: {e}", exc_info=True)
 
-# ── 汇总 ──
 _log_gpu("完成")
 logger.info("=" * 60)
 logger.info(f"测试完成: {_total_ok} 成功, {_total_fail} 失败, 共 {len(INPUT_FILES)} 个文件")

@@ -77,19 +77,6 @@ def process_single_file(
         file_path = convert_pdf_to_tif(file_path, output_dir, dpi=600)
         ext = ".tif"
 
-    # ── TIF 文件大小压缩 ──
-    if ext in (".tif", ".tiff"):
-        from modules.file_ingestion import compress_tif
-        import shutil
-        size_kb = os.path.getsize(file_path) / 1024
-        if size_kb > 1300:
-            # 复制到输出目录再压缩，不动原文件
-            copy_path = os.path.join(output_dir, os.path.basename(file_path))
-            if os.path.abspath(file_path) != os.path.abspath(copy_path):
-                shutil.copy2(file_path, copy_path)
-                file_path = copy_path
-            file_path = compress_tif(file_path, max_kb=1300)
-
     # ── OCR 图像路径 ──
     img_array, metadata = load_file(file_path)
     logger.info(

@@ -10,7 +10,7 @@ VLLM_BASE_URL = "http://localhost:8080/v1"
 VLLM_MODEL_NAME = "PaddleOCR-VL-1.5-0.9B"
 
 # 默认替换前缀
-DEFAULT_PREFIXES = ["Y"]
+DEFAULT_PREFIXES = ["Y", "X"]
 NEW_PREFIX = "H"
 
 
