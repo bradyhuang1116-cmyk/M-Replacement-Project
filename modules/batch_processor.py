@@ -98,6 +98,28 @@ def process_single_file(
         img_array = cv2.rotate(img_array, rot_code)
         logger.info(f"应用旋转到图像: rot_code={rot_code}")
 
+    # ── 文件名首字母 → 输出抑制规则 ──
+    # 内部依赖（如橙框搜索区以红框为锚）照常计算；这里只把不应进入最终输出
+    # 的 region 设为 None，下游 cyan 生成 / text_replacer / debug 绘图 / y_boxes
+    # 看到 None 一律跳过。
+    #   Y         → 全输出
+    #   B         → 不输出红框
+    #   P/G/O/J   → 不输出绿框 + 橙框
+    #   其它字母  → 仅输出工厂注意（红/绿/橙都不输出）
+    first_letter = basename[0].upper() if basename else ''
+    if first_letter == 'Y':
+        suppress: set[str] = set()
+    elif first_letter == 'B':
+        suppress = {"material_code_column"}
+    elif first_letter in ('P', 'G', 'O', 'J'):
+        suppress = {"bottom_right_number", "top_left_number"}
+    else:
+        suppress = {"material_code_column", "bottom_right_number", "top_left_number"}
+    for key in suppress:
+        if regions.get(key) is not None:
+            logger.info(f"  跳框规则 (首字母={first_letter or '?'}): 抑制 {key}")
+            regions[key] = None
+
     detected = {k: v for k, v in regions.items() if v is not None}
     logger.info(f"检测到 {len(detected)} 个区域: {list(detected.keys())}")
 
