@@ -958,6 +958,23 @@ def clear_y_box_records() -> None:
     _y_box_records.clear()
 
 
+def record_y_box(source_file: str, token: str, bbox) -> None:
+    """记录一个被替换的 Y 编号框（cyan / green / orange / factory_note 通用）。
+
+    bbox 支持 BBox 对象或 (x, y, w, h) 四元组。
+    """
+    if hasattr(bbox, "x") and hasattr(bbox, "y") and hasattr(bbox, "w") and hasattr(bbox, "h"):
+        x, y, w, h = bbox.x, bbox.y, bbox.w, bbox.h
+    else:
+        x, y, w, h = bbox
+    _y_box_records.append({
+        "source_file": source_file or "",
+        "token": token or "",
+        "x1": int(x), "y1": int(y),
+        "x2": int(x + w), "y2": int(y + h),
+    })
+
+
 def flush_y_boxes_csv(out_path: str) -> int:
     """把累计的 Y 框写入 CSV；返回记录数。空列表也会写出仅含表头的 CSV。"""
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -1172,12 +1189,6 @@ def detect_factory_note_codes_v6(
                         "code": _tk,
                         "bbox": BBox(bx1, by1, w_px, h_px),
                         "confidence": 1.0,
-                    })
-                    _y_box_records.append({
-                        "source_file": source_file,
-                        "token": _tk,
-                        "x1": bx1, "y1": by1,
-                        "x2": bx2, "y2": by2,
                     })
 
             logger.info(

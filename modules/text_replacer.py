@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from config import Y_PATTERN, FONT_PATH, OCR_LANG_EN, OCR_LANG_CH, DEFAULT_REGIONS, make_pattern, DEFAULT_PREFIXES, OCR_MODE
 from modules.region_detector import BBox, _pct_to_px, _detect_horizontal_lines, _detect_horizontal_lines_adaptive, _ocr_region
+from modules.factory_note_pixel import record_y_box
 
 logger = logging.getLogger(__name__)
 
@@ -1695,6 +1696,10 @@ def replace_in_all_regions(
             # 存储青色框供 debug 绘图使用
             regions.setdefault("_metadata", {})["cyan_boxes"] = cyan_boxes
 
+            # CSV 记录：每个被替换的青色（红框单元格）框
+            for cb, (old_t, _new_t) in zip(cyan_boxes, repls):
+                record_y_box(filename or "", old_t, cb)
+
         elif region_name in ("bottom_right_number", "top_left_number"):
             # 首次遇到绿/橙框时执行五方校验
             if region_name == "bottom_right_number":
@@ -1747,6 +1752,8 @@ def replace_in_all_regions(
                 modified = np.array(pil_modified)
                 repls = [(old_y, new_y)]
                 logger.info(f"  {region_name}: 替换 {old_y} → {new_y}")
+                # CSV 记录：绿/橙框
+                record_y_box(filename or "", old_y, bbox)
             else:
                 repls = []
                 logger.warning(f"  {region_name}: 无有效文本，跳过替换")
@@ -1801,5 +1808,7 @@ def replace_in_all_regions(
             modified = np.array(pil_modified)
             all_replacements.append((code, new_text))
             logger.info(f"  Factory Note: {code} → {new_text}")
+            # CSV 记录：工厂注意编号框
+            record_y_box(filename or "", code, bbox)
 
     return modified, all_replacements
