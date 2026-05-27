@@ -236,14 +236,14 @@ def process_batch(
         f"\n处理完成: {success}/{len(results)} 成功, 共 {total_repls} 处替换"
     )
 
-    # 生成报告
-    _save_report(results, output_dir)
-
-    # 工厂注意 Y 编号框坐标汇总（人工核对用，正常流水线不读取）
+    # Y 编号框坐标汇总（先于报告生成，避免报告异常时丢 CSV）
     try:
         flush_y_boxes_csv(os.path.join(output_dir, "y_boxes.csv"))
     except Exception as e:
         logger.warning(f"y_boxes.csv 写入失败（不影响结果）: {e}")
+
+    # 生成报告
+    _save_report(results, output_dir)
 
     return results
 
@@ -272,7 +272,11 @@ def _save_report(results: list[dict], output_dir: str):
                     f"  {os.path.basename(r['file'])} "
                     f"[{r['method']}] {r['total']} 处替换\n"
                 )
-                for old, new in r.get("replacements", []):
+                for repl in r.get("replacements", []):
+                    # OCR: (old, new); 矢量PDF: (old, new, page)
+                    if not isinstance(repl, (tuple, list)) or len(repl) < 2:
+                        continue
+                    old, new = repl[0], repl[1]
                     if isinstance(old, str):
                         f.write(f"    {old} → {new}\n")
 
