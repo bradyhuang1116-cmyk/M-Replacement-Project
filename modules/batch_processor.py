@@ -1,6 +1,7 @@
 """批量处理流水线"""
 
 import os
+import gc
 import logging
 import traceback
 from datetime import datetime
@@ -228,6 +229,12 @@ def process_batch(
                 "error": str(e),
                 "traceback": traceback.format_exc(),
             })
+        finally:
+            # 释放单个文件的大对象（img_array/enhanced/modified 等局部数组
+            # 在 process_single_file 返回后已无引用，但 numpy/Paddle 临时缓冲
+            # 不一定立刻归还系统）。每张图纸跑完强制一次 gc，降低任务管理器
+            # 看到的 RAM 峰值；不影响结果。
+            gc.collect()
 
     # 统计
     success = sum(1 for r in results if r["status"] == "success")
