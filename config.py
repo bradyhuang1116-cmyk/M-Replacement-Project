@@ -15,13 +15,15 @@ NEW_PREFIX = "H"
 
 
 def make_pattern(prefixes=None):
-    """生成匹配正则，支持多个首字母。如 ["Y","A"] → r'\b[YA][A-Z0-9]{6,}\b'
-    匹配首字母 + 至少6位字母数字（总长 >= 7）。"""
+    """生成匹配正则，支持多个首字母。如 ["Y","A"] → r'[YA](?=[A-Z0-9]*\d)[A-Z0-9]{6,}'
+    Y 编号定义：首字母（Y/X 等） + ≥6 位字母数字，且这 ≥6 位中**至少含 1 个数字**
+    （纯字母如 YARIABLE 只是英文词，不是编号）。
+    不使用 \b 词边界 —— Y 编号无论前后粘什么字符都应被识别（如 `01.021YA057C800-01`）。"""
     prefixes = prefixes or DEFAULT_PREFIXES
     chars = "".join(p.upper() for p in prefixes)
     if len(chars) == 1:
-        return rf"\b{chars}[A-Z0-9]{{6,}}\b"
-    return rf"\b[{chars}][A-Z0-9]{{6,}}\b"
+        return rf"{chars}(?=[A-Z0-9]*\d)[A-Z0-9]{{6,}}"
+    return rf"[{chars}](?=[A-Z0-9]*\d)[A-Z0-9]{{6,}}"
 
 
 # Y 编号匹配正则 —— 保持向后兼容

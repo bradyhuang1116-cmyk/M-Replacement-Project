@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import UploadFile
 from config import DEFAULT_PREFIXES
 from modules.batch_processor import process_single_file
+from modules.factory_note_pixel import clear_y_box_records
 
 class DrawingService:
     def __init__(self):
@@ -22,6 +23,9 @@ class DrawingService:
         file_path = self.upload_dir / file.filename
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
+
+        # 清空模块级 Y 编号汇总（防止跨请求累积）
+        clear_y_box_records()
 
         # 调用核心处理逻辑
         result = process_single_file(

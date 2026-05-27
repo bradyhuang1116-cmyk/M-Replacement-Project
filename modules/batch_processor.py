@@ -184,6 +184,9 @@ def process_batch(
     logger.info(f"共找到 {len(files)} 个文件待处理")
     results = []
 
+    from modules.factory_note_pixel import clear_y_box_records, flush_y_boxes_csv
+    clear_y_box_records()
+
     for file_path in tqdm(files, desc="处理图纸", unit="张"):
         try:
             result = process_single_file(
@@ -213,6 +216,13 @@ def process_batch(
 
     # 生成报告
     _save_report(results, output_dir)
+
+    # 工厂注意 Y 编号框坐标汇总（人工核对用，正常流水线不读取）
+    try:
+        flush_y_boxes_csv(os.path.join(output_dir, "y_boxes.csv"))
+    except Exception as e:
+        logger.warning(f"y_boxes.csv 写入失败（不影响结果）: {e}")
+
     return results
 
 

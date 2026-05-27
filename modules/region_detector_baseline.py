@@ -650,35 +650,12 @@ def _detect_drawing_frame(image: np.ndarray) -> BBox:
 #  Phase B-1: 定位 MATERIAL CODE 列
 # ══════════════════════════════════════════════════════════════════
 
-def _validate_material_code_column(
-    image: np.ndarray,
-    col_bbox: BBox,
-    anchor_match: dict | None = None,
-) -> bool:
-    """验证列内是否包含MATERIAL CODE文字，确认找对了位置。
-
-    anchor_match: 定位阶段的关键词命中结果（含 text/keyword/score/poly）。
-      若是精确命中（score>=0.95）且 poly 落在扩展验证区域的水平范围内，
-      则直接通过——避免对窄列做二次 OCR 时小字漏检（如 PDF 渲染的"代号"）。
-    """
+def _validate_material_code_column(image: np.ndarray, col_bbox: BBox) -> bool:
+    """验证列内是否包含MATERIAL CODE文字，确认找对了位置"""
     # 向上扩展200px包含表头区域
     extended_y = max(0, col_bbox.y - 200)
     extended_h = col_bbox.h + (col_bbox.y - extended_y)
     extended_bbox = BBox(col_bbox.x, extended_y, col_bbox.w, extended_h)
-
-    # 旁路：定位阶段已是精确命中且关键词位置就在扩展区域内 → 直接信任
-    if anchor_match and anchor_match.get("score", 0) >= 0.95:
-        poly = anchor_match.get("poly")
-        if poly:
-            cx = sum(p[0] for p in poly) / len(poly)
-            cy = sum(p[1] for p in poly) / len(poly)
-            if (extended_bbox.x <= cx <= extended_bbox.x + extended_bbox.w
-                    and extended_bbox.y <= cy <= extended_bbox.y + extended_bbox.h):
-                logger.info(
-                    f"  列内容验证旁路: 定位精确命中 '{anchor_match['text']}' "
-                    f"(score={anchor_match['score']:.2f})"
-                )
-                return True
 
     # 先英文OCR，再中文OCR，合并结果
     ocr_results_en = _ocr_region(image, extended_bbox)
@@ -691,12 +668,12 @@ def _validate_material_code_column(
     # 第一轮：精确匹配
     for text, conf, poly in ocr_results:
         text_up = text.upper().replace(" ", "")
-        if "MATERIALCODE" in text_up or "MATERIAL" in text_up or "零部件图号" in text or "代号" in text:
+        if "MATERIALCODE" in text_up or "MATERIAL" in text_up or "零部件图号" in text:
             logger.info(f"  列内容验证通过(精确): 找到'{text}'")
             return True
 
     # 第二轮：模糊匹配
-    keywords = ["MATERIAL CODE", "MATERUL CODE", "零部件图号", "DEF", "代号"]
+    keywords = ["MATERIAL CODE", "MATERUL CODE", "零部件图号", "DEF"]
     match = _fuzzy_find_keyword(ocr_results, keywords, threshold=0.60)
     if match:
         logger.info(f"  列内容验证通过(模糊): 找到'{match['text']}' 匹配'{match['keyword']}' (score={match['score']:.2f})")
@@ -861,7 +838,7 @@ def _locate_material_code_column(
     )
 
     if col_bbox is not None:
-        if not _validate_material_code_column(sub_image, col_bbox, anchor_match=match):
+        if not _validate_material_code_column(sub_image, col_bbox):
             logger.warning("列内容验证失败")
             return None, None
         col_bbox = _fix_dwg_left_boundary(sub_image, col_bbox)
@@ -1338,6 +1315,7 @@ def _search_y_number(
     image: np.ndarray,
     search: BBox,
     y_re,
+    loose_re,
     material_code_bbox: BBox | None = None,
     prefixes: list[str] = None,
 ) -> tuple[str, BBox] | None:
@@ -1357,7 +1335,20 @@ def _search_y_number(
                     text_clean = fuzzy_text
                     logger.info(f"  模糊回填: '{text.upper().replace(' ', '')}' → '{fuzzy_text}'")
         if not m:
-            continue
+            m_loose = loose_re.search(text_clean)
+            if not m_loose:
+                continue
+            if len(text_clean) < 5:
+                continue
+            # 尝试补前导 Y（OCR 可能遗漏首字母 Y）
+            if text_clean[0] != 'Y':
+                y_candidate = 'Y' + text_clean
+                m_y = y_re.search(y_candidate)
+                if m_y:
+                    text_clean = y_candidate
+                    m = m_y
+                    logger.info(f"  前导Y补全: '{text.upper().replace(' ', '')}'"
+                                f" → '{y_candidate}'")
         if poly:
             xs = [p[0] for p in poly]
             ys = [p[1] for p in poly]
@@ -2158,10 +2149,11 @@ def _locate_bottom_right_number_core(
 ) -> tuple[str, BBox] | None:
     """核心编号检测逻辑（不含 bbox 裁切）。"""
     y_re = re.compile(make_pattern(prefixes))
+    loose_re = re.compile(r"[A-Z][A-Z0-9]*\d{2,}[A-Z]\d{2,}")
     search = BBox(0, 0, img_w, img_h)
 
     # ── Layer 1: 全区域 OCR ──
-    result = _search_y_number(sub_image, search, y_re, prefixes=prefixes)
+    result = _search_y_number(sub_image, search, y_re, loose_re, prefixes=prefixes)
     if result:
         y_text, text_bbox = result
 
@@ -2206,7 +2198,7 @@ def _locate_bottom_right_number_core(
                 logger.info(f"  绿框L1c: '{y_text}' 截断，扩展 +{ext_r}px右 "
                             f"+{ext_v}px上下 重新 OCR")
                 re_result = _search_y_number(
-                    sub_image, ext_bbox, y_re, prefixes=prefixes
+                    sub_image, ext_bbox, y_re, loose_re, prefixes=prefixes
                 )
                 if re_result:
                     re_text, re_bbox = re_result
@@ -2231,7 +2223,7 @@ def _locate_bottom_right_number_core(
     # L2/L3 辅助：搜索 + 截断扩展修复
     def _search_and_extend(crop, layer_name, v_rank, h_rank):
         """在裁切区域 OCR，若截断则扩展右侧重试。返回 (text, bbox) 或 None。"""
-        result = _search_y_number(sub_image, crop, y_re, prefixes=prefixes)
+        result = _search_y_number(sub_image, crop, y_re, loose_re, prefixes=prefixes)
         if not result:
             return None
         y_text, text_bbox = result
@@ -2260,7 +2252,7 @@ def _locate_bottom_right_number_core(
             if ext_r > 0:
                 logger.info(f"  绿框{layer_name}: '{y_text}' 截断，扩展 +{ext_r}px右 重新OCR")
                 re_result = _search_y_number(
-                    sub_image, ext_bbox, y_re, prefixes=prefixes
+                    sub_image, ext_bbox, y_re, loose_re, prefixes=prefixes
                 )
                 if re_result:
                     re_text, re_bbox = re_result
@@ -2290,7 +2282,7 @@ def _locate_bottom_right_number_core(
 
     # ── Layer 4: 预处理增强 + 全区域 OCR（处理大字号/低对比度编号）──
     preprocessed = _preprocess_green_ocr(sub_image)
-    result = _search_y_number(preprocessed, search, y_re, prefixes=prefixes)
+    result = _search_y_number(preprocessed, search, y_re, loose_re, prefixes=prefixes)
     if result:
         y_text, text_bbox = result
         y_text = _fix_digit_letter_confusion(y_text)
@@ -2318,7 +2310,7 @@ def _locate_bottom_right_number_core(
             if ext_r > 0:
                 logger.info(f"  绿框L4: '{y_text}' 截断，扩展 +{ext_r}px右 重新OCR")
                 re_result = _search_y_number(
-                    preprocessed, ext_bbox, y_re, prefixes=prefixes
+                    preprocessed, ext_bbox, y_re, loose_re, prefixes=prefixes
                 )
                 if re_result:
                     re_text, re_bbox = re_result
@@ -3043,35 +3035,26 @@ def detect_all_regions(
             logger.info(f"  {name}: 未检测到")
 
     # ── Phase C: 工厂注意部分检测 ──
-    # 主路径：纯像素 V6（V5 粗扫 → VLM 精定位）；失败回退到 PP-DocLayoutV3。
     logger.info("Phase C: 工厂注意部分检测 ...")
-    fn_codes: list = []
-    fn_source = "v6"
+    from PIL import Image as PILImage
+    image_pil = PILImage.fromarray(image)
+
+    exclude_bboxes = []
+    for name in ("material_code_column", "bottom_right_number", "top_left_number"):
+        b = result.get(name)
+        if b is not None:
+            exclude_bboxes.append((b.x, b.y, b.x2, b.y2))
+
     try:
-        from modules.factory_note_pixel import detect_factory_note_codes_v6
-        fn_codes = detect_factory_note_codes_v6(image, result, prefixes=prefixes)
+        fn_candidates = _detect_factory_note_candidates(image_pil, exclude_bboxes)
+        fn_codes = _detect_factory_note_codes(image_pil, fn_candidates, prefixes)
     except Exception as e:
-        logger.warning(f"Factory Note v6 失败，回退 PP-DocLayoutV3: {e}", exc_info=True)
-        fn_source = "pp_doclayout_v3"
-        from PIL import Image as PILImage
-        image_pil = PILImage.fromarray(image)
-        exclude_bboxes = []
-        for name in ("material_code_column", "bottom_right_number", "top_left_number"):
-            b = result.get(name)
-            if b is not None:
-                exclude_bboxes.append((b.x, b.y, b.x2, b.y2))
-        try:
-            fn_candidates = _detect_factory_note_candidates(image_pil, exclude_bboxes)
-            fn_codes = _detect_factory_note_codes(image_pil, fn_candidates, prefixes)
-            metadata["factory_note_candidates"] = fn_candidates
-            metadata["factory_note_candidate_count"] = len(fn_candidates)
-        except Exception as e2:
-            logger.warning(f"Factory Note PP-DocLayoutV3 fallback 也失败: {e2}")
-            fn_codes = []
+        logger.warning(f"Factory Note 检测失败: {e}")
+        fn_codes = []
 
     result["factory_note_codes"] = fn_codes
-    metadata["factory_note_source"] = fn_source
-    logger.info(f"Factory Note: {len(fn_codes)} 个编号 (source={fn_source})")
+    metadata["factory_note_candidates"] = fn_candidates if 'fn_candidates' in dir() else []
+    metadata["factory_note_candidate_count"] = len(fn_candidates) if 'fn_candidates' in dir() else 0
 
     # 纵向图纸：不进行坐标逆映射，保持旋转后图像的坐标系
     if rot_code is not None:

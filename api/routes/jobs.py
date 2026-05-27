@@ -112,7 +112,9 @@ def _run_job(job: dict):
         job["phase"] = "processing"
         from modules.batch_processor import process_single_file
         from modules.text_replacer import clear_ocr_cache
+        from modules.factory_note_pixel import clear_y_box_records, flush_y_boxes_csv
         clear_ocr_cache()
+        clear_y_box_records()
 
         for i, file_path in enumerate(file_paths):
             if cancel.is_set():
@@ -172,6 +174,14 @@ def _run_job(job: dict):
                     os.rmdir(d)
             except OSError:
                 pass
+
+        try:
+            from modules.factory_note_pixel import flush_y_boxes_csv
+            n = flush_y_boxes_csv(os.path.join(base_output, "y_boxes.csv"))
+            if n:
+                logger.info(f"y_boxes.csv 已写入 {n} 条记录")
+        except Exception as e:
+            logger.warning(f"y_boxes.csv 写入失败（不影响结果）: {e}")
 
         root_logger.removeHandler(fh)
         root_logger.removeHandler(buf_handler)
