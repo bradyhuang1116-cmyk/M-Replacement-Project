@@ -7,15 +7,23 @@ import logging
 
 import requests
 
+from config import (
+    DOCKER_CONTAINER_NAME,
+    DOCKER_CONTAINER_PORT,
+    DOCKER_IMAGE as _CFG_DOCKER_IMAGE,
+    VLLM_MODEL_DIR,
+    VLLM_CONFIG_PATH,
+)
+
 logger = logging.getLogger(__name__)
 
-CONTAINER_NAME = "paddleocr-vl-vllm"
-CONTAINER_PORT = 8080
-DOCKER_IMAGE = "ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu"
+# 保留模块内导出名（旧代码可能 import）；值取自 config，可通过 .env 覆盖
+CONTAINER_NAME = DOCKER_CONTAINER_NAME
+CONTAINER_PORT = DOCKER_CONTAINER_PORT
+DOCKER_IMAGE = _CFG_DOCKER_IMAGE
 
-_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MODEL_PATH = os.path.join(_BASE_DIR, "models", "PaddleOCR-VL-1.5")
-_CONFIG_PATH = os.path.join(_BASE_DIR, "vllm_config.yaml")
+_MODEL_PATH = VLLM_MODEL_DIR
+_CONFIG_PATH = VLLM_CONFIG_PATH
 
 
 def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str]:

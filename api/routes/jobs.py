@@ -15,7 +15,14 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from config import SUPPORTED_EXTENSIONS, DEFAULT_PREFIXES
+from config import (
+    SUPPORTED_EXTENSIONS,
+    DEFAULT_PREFIXES,
+    OUTPUT_SUBDIR,
+    VLMOCR_SUBDIR,
+    PDF_REPLACEMENT_SUBDIR,
+    Y_BOXES_CSV_NAME,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -49,9 +56,9 @@ def _run_job(job: dict):
     cancel: threading.Event = job["cancel"]
     file_paths: list[str] = job["file_paths"]
 
-    base_output = os.path.join(output_dir, "OUTPUT")
-    vlmocr_dir = os.path.join(base_output, "VLMOCR")
-    pdf_dir = os.path.join(base_output, "PDF_Replacement")
+    base_output = os.path.join(output_dir, OUTPUT_SUBDIR)
+    vlmocr_dir = os.path.join(base_output, VLMOCR_SUBDIR)
+    pdf_dir = os.path.join(base_output, PDF_REPLACEMENT_SUBDIR)
     os.makedirs(vlmocr_dir, exist_ok=True)
     os.makedirs(pdf_dir, exist_ok=True)
 
@@ -177,7 +184,7 @@ def _run_job(job: dict):
 
         try:
             from modules.factory_note_pixel import flush_y_boxes_csv
-            n = flush_y_boxes_csv(os.path.join(base_output, "y_boxes.csv"))
+            n = flush_y_boxes_csv(os.path.join(base_output, Y_BOXES_CSV_NAME))
             if n:
                 logger.info(f"y_boxes.csv 已写入 {n} 条记录")
         except Exception as e:

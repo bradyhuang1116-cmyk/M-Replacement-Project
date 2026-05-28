@@ -11,7 +11,7 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from config import SUPPORTED_EXTENSIONS
+from config import SUPPORTED_EXTENSIONS, Y_BOXES_CSV_NAME, PROCESSING_REPORT_NAME
 from modules.file_ingestion import load_file
 from modules.pdf_vector_handler import is_vector_pdf, replace_text_in_pdf
 from modules.region_detector import detect_all_regions, _enhance_vertical_lines
@@ -245,7 +245,7 @@ def process_batch(
 
     # Y 编号框坐标汇总（先于报告生成，避免报告异常时丢 CSV）
     try:
-        flush_y_boxes_csv(os.path.join(output_dir, "y_boxes.csv"))
+        flush_y_boxes_csv(os.path.join(output_dir, Y_BOXES_CSV_NAME))
     except Exception as e:
         logger.warning(f"y_boxes.csv 写入失败（不影响结果）: {e}")
 
@@ -257,7 +257,7 @@ def process_batch(
 
 def _save_report(results: list[dict], output_dir: str):
     """生成简单的文本处理报告"""
-    report_path = os.path.join(output_dir, "processing_report.txt")
+    report_path = os.path.join(output_dir, PROCESSING_REPORT_NAME)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(f"图纸批量处理报告\n")
         f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")

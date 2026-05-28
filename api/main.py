@@ -14,6 +14,7 @@ logging.basicConfig(
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import drawings, health, jobs, gpu, folders, system
+from config import API_CORS_ORIGINS
 
 app = FastAPI(
     title="三菱图纸替换API",
@@ -21,10 +22,10 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# CORS配置
+# CORS配置（默认 ["*"] 全通；可通过 API_CORS_ORIGINS 环境变量逗号分隔限制）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=API_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,4 +57,5 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    from config import API_HOST, API_PORT
+    uvicorn.run(app, host=API_HOST, port=API_PORT)

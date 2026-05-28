@@ -1,13 +1,83 @@
-"""全局配置"""
+"""全局配置
+
+§12 Phase 1: 部署相关常量优先从环境变量读取（支持 .env），不配置时回退到现有默认值。
+不改这些 env 时，行为完全等同于改造前。
+"""
 import os
 
+# 可选 dotenv —— 装了就用，没装也不挡道（默认仍走系统环境变量）
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FONT_PATH = os.path.join(BASE_DIR, "fonts", "dingliesongtypeface20241217-2.ttf")
-PDF_FONT_PATH = os.path.join(BASE_DIR, "fonts", "dingliesongtypeface20241217-2.ttf")
+
+# ── 字体路径 ──
+FONT_PATH = os.getenv(
+    "FONT_PATH",
+    os.path.join(BASE_DIR, "fonts", "dingliesongtypeface20241217-2.ttf"),
+)
+PDF_FONT_PATH = os.getenv("PDF_FONT_PATH", FONT_PATH)
+
+# ── vLLM 模型目录 / 配置文件 ──（docker run 挂载用）
+VLLM_MODEL_DIR = os.getenv(
+    "VLLM_MODEL_DIR",
+    os.path.join(BASE_DIR, "models", "PaddleOCR-VL-1.5"),
+)
+VLLM_CONFIG_PATH = os.getenv(
+    "VLLM_CONFIG_PATH",
+    os.path.join(BASE_DIR, "vllm_config.yaml"),
+)
 
 # ── VLM OCR 引擎配置（PaddleOCR-VL-1.5 via vLLM HTTP）────────────
-VLLM_BASE_URL = "http://localhost:8080/v1"
-VLLM_MODEL_NAME = "PaddleOCR-VL-1.5-0.9B"
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
+VLLM_MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "PaddleOCR-VL-1.5-0.9B")
+
+# ── Docker 容器配置 ──
+DOCKER_CONTAINER_NAME = os.getenv("DOCKER_CONTAINER_NAME", "paddleocr-vl-vllm")
+DOCKER_CONTAINER_PORT = int(os.getenv("DOCKER_CONTAINER_PORT", "8080"))
+DOCKER_IMAGE = os.getenv(
+    "DOCKER_IMAGE",
+    "ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu",
+)
+
+# ── API 服务网络 ──
+API_HOST = os.getenv("API_HOST", "0.0.0.0")
+API_PORT = int(os.getenv("API_PORT", "8000"))
+# 逗号分隔；"*" 表示全部放行
+API_CORS_ORIGINS = [
+    s.strip() for s in os.getenv("API_CORS_ORIGINS", "*").split(",") if s.strip()
+]
+
+# ── 输出目录子结构 ──
+OUTPUT_SUBDIR = os.getenv("OUTPUT_SUBDIR", "OUTPUT")
+VLMOCR_SUBDIR = os.getenv("VLMOCR_SUBDIR", "VLMOCR")
+PDF_REPLACEMENT_SUBDIR = os.getenv("PDF_REPLACEMENT_SUBDIR", "PDF_Replacement")
+Y_BOXES_CSV_NAME = os.getenv("Y_BOXES_CSV_NAME", "y_boxes.csv")
+PROCESSING_REPORT_NAME = os.getenv("PROCESSING_REPORT_NAME", "processing_report.txt")
+
+# ── 持久化数据（队列 / 日志）──（§12 Phase 2+）
+DATA_DIR = os.getenv("DATA_DIR", os.path.join(BASE_DIR, "data"))
+QUEUE_DB_PATH = os.getenv("QUEUE_DB_PATH", os.path.join(DATA_DIR, "queue.db"))
+# Worker 处理产物根目录（Phase 2 起，watch folder / API 任务都会落到这里）
+WORKER_OUTPUT_DIR = os.getenv("WORKER_OUTPUT_DIR", os.path.join(DATA_DIR, "processed"))
+# Worker 空闲时的轮询间隔（秒）
+WORKER_POLL_INTERVAL = float(os.getenv("WORKER_POLL_INTERVAL", "1.5"))
+# Worker 单任务失败后的最大重试次数
+WORKER_MAX_RETRY = int(os.getenv("WORKER_MAX_RETRY", "1"))
+
+# ── Watch folder（§12 Phase 3）──
+# PLM 投递入口 / 处理中 / 输出 / 失败；默认放在 DATA_DIR/watch/* 便于本地测试
+WATCH_INBOX_DIR = os.getenv("WATCH_INBOX_DIR", os.path.join(DATA_DIR, "watch", "inbox"))
+WATCH_PROCESSING_DIR = os.getenv("WATCH_PROCESSING_DIR", os.path.join(DATA_DIR, "watch", "processing"))
+WATCH_OUTPUT_DIR = os.getenv("WATCH_OUTPUT_DIR", os.path.join(DATA_DIR, "watch", "output"))
+WATCH_FAILED_DIR = os.getenv("WATCH_FAILED_DIR", os.path.join(DATA_DIR, "watch", "failed"))
+# 文件稳定性窗口（秒）：连续 N 秒 size+mtime 不变才入队（防止 PLM 写一半就被读）
+WATCH_STABILITY_SECONDS = float(os.getenv("WATCH_STABILITY_SECONDS", "3.0"))
+# 扫描 inbox 的间隔（秒）；当前不用 inotify/ReadDirectoryChangesW，纯轮询足够
+WATCH_SCAN_INTERVAL = float(os.getenv("WATCH_SCAN_INTERVAL", "2.0"))
 
 # 默认替换前缀
 DEFAULT_PREFIXES = ["Y", "X", "B", "H"]
