@@ -1,0 +1,26 @@
+# NodexelOCR 推理镜像
+# 基于百度官方 vLLM 镜像，把 PaddleOCR-VL-1.5 模型 COPY 进镜像内部
+# 目标：模型不暴露在宿主机（文件层隐藏）+ 镜像改中性名（来源隐藏）
+#
+# 构建（在项目根目录执行，build context = 项目根）：
+#   docker build -f docker/Dockerfile.nodexel -t nodexel-ocr:v1 .
+#   docker tag nodexel-ocr:v1 NodexelOCR:v1
+#
+# 验证保留 genai_server（不换 vllm serve，避免破坏 <|LOC_n|> 输出格式）
+
+FROM ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
+
+# 模型 COPY 到容器内可写路径（/app 无写权限，用 /home/paddleocr/）
+# 经 PoC 验证：genai_server --model_dir 可从此内置路径加载，输出格式正常
+COPY models/PaddleOCR-VL-1.5 /home/paddleocr/models/PaddleOCR-VL-1.5
+COPY vllm_config.yaml /home/paddleocr/vllm_config.yaml
+
+EXPOSE 8080
+
+ENTRYPOINT ["paddleocr", "genai_server", \
+    "--model_name", "PaddleOCR-VL-1.5-0.9B", \
+    "--model_dir", "/home/paddleocr/models/PaddleOCR-VL-1.5", \
+    "--host", "0.0.0.0", \
+    "--port", "8080", \
+    "--backend", "vllm", \
+    "--backend_config", "/home/paddleocr/vllm_config.yaml"]

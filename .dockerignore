@@ -1,0 +1,4 @@
+# 只需要 models/ 和 vllm_config.yaml 进 build context，其余全排除
+*
+!models/PaddleOCR-VL-1.5/**
+!vllm_config.yaml
