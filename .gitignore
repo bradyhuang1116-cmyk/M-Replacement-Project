@@ -63,3 +63,9 @@ out/
 
 # Claude
 .claude/
+
+# PyInstaller 打包产物
+build_tools/dist/
+build_tools/work/
+build_tools/*.log
+*.spec.bak
