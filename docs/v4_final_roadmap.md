@@ -140,16 +140,16 @@ docker save NodexelOCR:v1 | gzip > NodexelOCR.tar.gz   # ~10GB
 result = process_single_file(file_path, output_dir)
 # 返回 {status, method, total(替换数), output_path}
 ```
-- `method == "vector"` → O 标记（矢量直接处理）
-- `method == "ocr"` → N 标记（经 OCR 识别）
-- 对方据此回写 OCR 字段
+- `method == "ocr"` → O 标记（使用了 OCR 识别，扫描件路径）
+- `method == "vector"` → N 标记（未使用 OCR，矢量 PDF 直接处理）
+- 对方据此回写 OCR 字段（定义对齐客户 Word 文档：O=是/用OCR，N=否/未用OCR）
 
 ### 3.3 实现要点（给对方的建议）
 
 | 要点 | 建议 |
 |---|---|
 | Oracle 驱动 | `oracledb` thin 模式（纯 Python，无需 Instant Client），离线只多一个 wheel |
-| O/N 映射 | `ocr_flag = "O" if method=="vector" else "N"` |
+| O/N 映射 | `ocr_flag = "O" if method=="ocr" else "N"`（O=用OCR，N=未用OCR，对齐 Word 文档） |
 | 事务 | 双表更新用一个事务包裹，任一失败 rollback |
 | 防重复消费 | `SELECT ... FOR UPDATE SKIP LOCKED` 或单实例串行 |
 | 失败处理 | 路径不存在/定位失败 → 记日志告警，不跳过 |

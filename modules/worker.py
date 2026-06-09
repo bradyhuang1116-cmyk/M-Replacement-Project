@@ -63,6 +63,9 @@ class Worker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._vlm_ready = False
+        # 图纸处理日志表（开放给 PLM 后台访问）
+        from modules.process_log import ProcessLog
+        self._process_log = ProcessLog()
 
     # ── 生命周期 ──
     def start(self) -> None:
@@ -193,6 +196,19 @@ class Worker:
 
         self.queue.mark_done(job.id, final_path)
 
+        # 写图纸处理日志（O/N）：method='ocr'→O（用OCR），'vector'→N（未用OCR）
+        try:
+            from modules.process_log import method_to_ocr_flag
+            self._process_log.record(
+                drawing_no=job.drawing_no,
+                revision=job.revision,
+                ocr_flag=method_to_ocr_flag(method),
+                status="success",
+                filename=job.source_file,
+            )
+        except Exception as e:
+            logger.warning(f"[job={job.id}] 写处理日志失败（不影响结果）: {e}")
+
     # ── 失败处理 ──
     def _handle_failure(self, job: Job, err: str) -> None:
         # 先标 failed，再视重试策略尝试 requeue
@@ -203,6 +219,17 @@ class Worker:
                 logger.warning(f"[job={job.id}] 失败已重新排队 (max_retry={self.max_retry}): {err}")
                 return
         logger.error(f"[job={job.id}] 失败（不再重试）: {err}")
+        # 失败也记日志（ocr_flag 用 N 占位，status=failed）
+        try:
+            self._process_log.record(
+                drawing_no=job.drawing_no,
+                revision=job.revision,
+                ocr_flag="N",
+                status="failed",
+                filename=job.source_file,
+            )
+        except Exception as e:
+            logger.warning(f"[job={job.id}] 写失败日志异常: {e}")
         # watch_folder 任务彻底失败：把 processing\ 里的源文件搬到 failed\
         if job.source == "watch_folder" and os.path.isfile(job.file_path):
             try:

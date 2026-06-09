@@ -61,6 +61,8 @@ PROCESSING_REPORT_NAME = os.getenv("PROCESSING_REPORT_NAME", "processing_report.
 # ── 持久化数据（队列 / 日志）──（§12 Phase 2+）
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(BASE_DIR, "data"))
 QUEUE_DB_PATH = os.getenv("QUEUE_DB_PATH", os.path.join(DATA_DIR, "queue.db"))
+# 图纸处理日志表（开放给 PLM 后台访问）；字段对齐客户 R_V_TD_FILEPATH
+PROCESS_LOG_DB_PATH = os.getenv("PROCESS_LOG_DB_PATH", os.path.join(DATA_DIR, "process_log.db"))
 # Worker 处理产物根目录（Phase 2 起，watch folder / API 任务都会落到这里）
 WORKER_OUTPUT_DIR = os.getenv("WORKER_OUTPUT_DIR", os.path.join(DATA_DIR, "processed"))
 # Worker 空闲时的轮询间隔（秒）
