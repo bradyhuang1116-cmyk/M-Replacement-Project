@@ -31,31 +31,28 @@ else
     exit 1
 fi
 
-# ── 2. Nuitka 编译算法核心 → .pyd ────────────────────────────
+# ── 2. Nuitka 编译 modules 全部 + config → .pyd ──────────────
 echo ""
-echo "[2/5] Nuitka 编译 4 个算法核心..."
+echo "[2/5] Nuitka 编译 modules/ 全部 + config..."
 bash scripts/compile_core.sh
-for mod in pdf_vector_handler factory_note_pixel text_replacer region_detector; do
-    cp "build/nuitka/$mod"*.pyd "$OUT/app/modules/$mod.pyd"
-    echo "  → app/modules/$mod.pyd（编译产物，无源码）"
+# config.pyd 放 app 根
+cp build/nuitka/config.cp310-win_amd64.pyd "$OUT/app/config.pyd"
+echo "  → app/config.pyd（含业务规则/编号正则，无源码）"
+# modules 各 .pyd（除 __init__）
+for src in modules/*.py; do
+    mod="$(basename "$src" .py)"
+    [ "$mod" = "__init__" ] && continue
+    cp "build/nuitka/$mod".cp310-win_amd64.pyd "$OUT/app/modules/$mod.pyd"
 done
+echo "  → app/modules/*.pyd（全模块编译，无源码）"
 
 # <!--PART2-PLACEHOLDER-->
 
-# ── 3. 应用代码（管道 .py + api + config + fonts，不含已编译的源 .py）──
+# ── 3. 应用代码（仅 api + manual_editor 保留 .py + fonts）──
 echo ""
-echo "[3/5] 拷贝应用代码（管道代码保持 .py，算法已是 .pyd）..."
-# modules 下除 4 个已编译模块外的 .py 全拷
-for f in modules/*.py; do
-    base=$(basename "$f" .py)
-    case "$base" in
-        pdf_vector_handler|factory_note_pixel|text_replacer|region_detector) ;;  # 跳过，用 .pyd
-        *) cp "$f" "$OUT/app/modules/" ;;
-    esac
-done
+echo "[3/5] 拷贝应用代码（modules+config 已是 .pyd，仅 api/manual_editor 保留 .py）..."
 cp modules/__init__.py "$OUT/app/modules/" 2>/dev/null || true
 cp -r api "$OUT/app/"
-cp config.py "$OUT/app/"
 cp -r fonts "$OUT/app/"
 cp start_v2.py "$OUT/app/"
 [ -d manual_editor ] && cp -r manual_editor "$OUT/app/" && rm -rf "$OUT/app/manual_editor/__pycache__"

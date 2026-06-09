@@ -85,21 +85,21 @@ docker save NodexelOCR:v1 | gzip > NodexelOCR.tar.gz   # ~10GB
 
 <!--PART2-PLACEHOLDER-->
 
-### 工作包 2：Nuitka 编译核心算法（源码保护）
+### 工作包 2：Nuitka 编译（源码保护）
 
-**目标**：4 个算法核心模块编译成机器码 `.pyd`，客户拿不到可读源码。
+**目标**：`modules/` 全部 + `config.py` 编译成机器码 `.pyd`，客户拿不到可读源码。
 
-| 编译对象 | 说明 |
-|---|---|
-| modules/region_detector.py | 区域检测裁切 |
-| modules/text_replacer.py | 投票仲裁 + 像素替换 |
-| modules/factory_note_pixel.py | 工厂注意区算法 |
-| modules/pdf_vector_handler.py | 矢量替换 |
+| 编译范围 | 内容 | 理由 |
+|---|---|---|
+| ✅ 编译 | modules/ 全部 13 个（算法核心 + 队列/worker/批处理等业务逻辑） | 算法 + 业务逻辑均保护 |
+| ✅ 编译 | config.py | 含编号正则/纠错表/列头锚点等领域知识 |
+| ❌ 保留 .py | api/（路由薄转发层） | 无算法，且 FastAPI 动态加载编译易坏 |
+| ❌ 保留 .py | manual_editor/（PySide6 GUI） | 编译易坏，独立工具 |
+| ❌ 保留 .py | __init__.py、start_v2.py | 包标识 / 入口 |
 
-- 其余管道代码（job_queue/worker/batch_processor/vlm_ocr_engine/api/config）保持 `.py`（泄露不致命）
-- 编译后 `.pyd` 可被正常 import，架构零改动
-- 编译在我方打包机做，客户只拿 `.pyd`
-- 验证：编译后跑一遍全流程，确认识别/替换结果与编译前一致
+- 编译后 `.pyd` 可被正常 import，架构零改动（config.pyd 仍可 `from config import`）
+- 编译在我方打包机做（`scripts/compile_core.sh`），客户只拿 `.pyd`
+- 已验证：14 个模块全编译 + 全 .pyd 替换后 smoke 测试 PASS，链路正常
 
 ### 工作包 3：Windows Service 封装 + 离线打包
 
