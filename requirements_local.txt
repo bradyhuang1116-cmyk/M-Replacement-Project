@@ -1,6 +1,11 @@
 # 应用服务依赖（Python 3.10，须与编译环境一致）
 
 # 推理与图像处理
+# ⚠️ paddlepaddle-gpu 必须装 CUDA 12.9 构建版（新架构 GPU 如 Blackwell/RTX 50 系必需）：
+#   pip install paddlepaddle-gpu==3.3.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+#   装错 CUDA 版本（如 cu126）会导致 GPU 推理静默返回空（不报错但识别全失败）
+# 配套 nvidia CUDA 库须为 12.9 系：cudnn 9.9.0.52 / cublas 12.9.0.13 /
+#   cuda-runtime 12.9.37 / cusolver 11.7.4.40 / cusparse 12.5.9.5 / cufft 11.4.0.6 / curand 10.3.10.19
 paddlepaddle-gpu==3.3.0
 paddleocr==3.4.0
 paddlex==3.4.2
