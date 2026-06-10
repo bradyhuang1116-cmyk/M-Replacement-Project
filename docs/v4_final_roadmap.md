@@ -1,29 +1,6 @@
-# V4 最终改造方案
+# 最终改造方案
 
-> **状态**：方案确定（2026-06-09），经大量 PoC 验证
-> **作者**：Brady Huang
-> **取代**：本文档取代 [v3_revised_roadmap.md](v3_revised_roadmap.md)（其中"去 vLLM 改原生推理"已验证否决）
-
----
-
-## 0. 方案演进与否决记录（避免重走弯路）
-
-| 曾考虑的方向 | 结论 | 依据 |
-|---|---|---|
-| 去 Docker，改 paddle 原生推理 | 🔴 **已否决** | PoC 验证 3 条路径全失败，见 §1 |
-| 换 vllm serve（弃 genai_server） | 🔴 **避免** | 会破坏 `<\|LOC_n\|>` 输出格式，重蹈覆辙 |
-| `--served-model-name` 隐藏接口名 | 🟡 不做 | genai_server 不支持；vLLM 是内部组件无外部访问 |
-| **保留 vLLM + 自打镜像 + Nuitka 编译** | ✅ **采纳** | 见 §2 |
-
-### §1 原生推理为何否决（PoC 实测）
-
-| 路径 | 方式 | 实测结果 |
-|---|---|---|
-| A | PaddleOCRVL() 高层 pipeline | 整页解析 366s/张，输出无 `<\|LOC_n\|>`，格式不兼容 |
-| B | transformers 直载 | 需引入 torch(~2.5GB)，torch/transformers 版本冲突，未跑通 |
-| C | paddlex create_model 底层 | **paddlex 本地后端静默忽略 repetition_penalty**（predictor.py:234），密集图病态重复生成→漏检+极慢（YA050C055：461s vs vLLM 8.8s） |
-
-**根因**：vLLM 的价值在推理引擎本身（repetition_penalty / KV cache / 连续批处理），不只是"算力来源"。把模型从 vLLM 搬到原生 = 丢掉整套成熟引擎再手搓复刻，是工程泥潭。**故保留 vLLM。**
+> 推理用 vLLM（NodexelOCR 自打镜像）+ Nuitka 编译源码保护 + PLM Oracle 直连。
 
 ---
 
@@ -62,23 +39,13 @@
 - 输出格式含 `<\|LOC_n\|>`，与现有 `parse_spotting_output` 完全兼容
 - 容器内 `/app` 无写权限，须用 `/home/paddleocr/` 路径
 
-**Dockerfile（基于百度镜像，不换 vllm serve）**：
-```dockerfile
-FROM ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
-COPY ./models/PaddleOCR-VL-1.5 /home/paddleocr/models/PaddleOCR-VL-1.5
-COPY ./vllm_config.yaml /home/paddleocr/vllm_config.yaml
-ENTRYPOINT ["paddleocr","genai_server", \
-  "--model_name","PaddleOCR-VL-1.5-0.9B", \
-  "--model_dir","/home/paddleocr/models/PaddleOCR-VL-1.5", \
-  "--host","0.0.0.0","--port","8080", \
-  "--backend","vllm","--backend_config","/home/paddleocr/vllm_config.yaml"]
-```
+**镜像构建**：见 `docker/Dockerfile.nodexel` + `docker/entrypoint.sh`（模型 COPY 进中性目录 nodexel-ocr，entrypoint 降日志级别）。
 
-**构建与改名**：
+**构建与打包**：
 ```bash
-docker build -t nodexel-ocr:v1 .
-docker tag nodexel-ocr:v1 NodexelOCR:v1     # 中性名，隐藏 paddleocr/baidu 来源
-docker save NodexelOCR:v1 | gzip > NodexelOCR.tar.gz   # ~10GB
+docker build -f docker/Dockerfile.nodexel -t nodexel-ocr:v1 .
+docker tag nodexel-ocr:v1 nodexelocr:v1
+docker save nodexelocr:v1 | gzip > NodexelOCR.tar.gz   # ~10GB
 ```
 
 **体积说明**：基础镜像 18.6GB（torch 6.8GB + SM120 算子 4.16GB，vLLM 固有成本，砍不掉）+ 模型 1.8GB ≈ 20GB，gzip 后传输 ~10GB。第一版不做瘦身，先 build 可跑版本。

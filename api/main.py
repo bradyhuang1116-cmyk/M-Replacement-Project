@@ -17,8 +17,8 @@ from api.routes import drawings, health, jobs, gpu, folders, system
 from config import API_CORS_ORIGINS
 
 app = FastAPI(
-    title="三菱图纸替换API",
-    description="图纸Y→HY批量替换系统REST API",
+    title="NodexelOCR 图纸替换API",
+    description="图纸编号批量替换系统REST API",
     version="2.0.0",
     # 关闭自带交互文档页（内部 API，不对用户暴露）
     docs_url=None,
