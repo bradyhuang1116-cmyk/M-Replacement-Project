@@ -59,7 +59,28 @@ cd dashboard && npm install && npm run dev
 | [dashboard/README.md](dashboard/README.md) | Next.js 前端说明 |
 | [manual_editor/README.md](manual_editor/README.md) | PySide6 桌面工具说明 |
 
-<!--PART2-->
+---
+
+## 当前进度
+
+| 项 | 状态 |
+|---|---|
+| 自打 NodexelOCR 镜像（模型封装 + 来源隐藏） | ✅ 完成 |
+| Nuitka 编译（modules 全部 + config → .pyd） | ✅ 完成 |
+| manual_editor → ManualEditor.exe | ✅ 完成 |
+| 处理日志表（O/N，开放给 PLM） | ✅ 完成 |
+| SQLite 队列 + Worker + 文件夹监听（测试/备用入口） | ✅ 完成 |
+| PLM Oracle 双表直连 | 🔵 对方实现（我方提供 `process_single_file()` 接口） |
+
+## 未完成事项
+
+- [ ] 实跑 `scripts/离线打包.sh` 生成客户正式交付包
+- [ ] 编写脱敏的客户正式部署/操作手册
+- [ ] 交付前把 `process_log` 的 `_WRITE_CSV_LOG` 设为 False
+- [ ] PLM Oracle 对接（对方）+ 联调（等测试库）
+
+> 详见 [docs/实现状态说明.md](docs/实现状态说明.md)（含已生成的临时测试包说明）。
+
 
 ## 仓库结构（精简）
 
