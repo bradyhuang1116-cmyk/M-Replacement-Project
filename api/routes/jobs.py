@@ -158,6 +158,21 @@ def _run_job(job: dict):
                 })
                 logger.info(f"  OK [{i+1}/{len(file_paths)}] {fname}: {result.get('total', 0)} replacements ({method_label})")
 
+                # 写处理日志（O/N）：O=用OCR(ocr)，N=未用OCR(vector)
+                try:
+                    from modules.process_log import ProcessLog, method_to_ocr_flag
+                    from modules.filename_parser import parse as _parse_fn
+                    _pf = _parse_fn(fname)
+                    ProcessLog().record(
+                        drawing_no=_pf.drawing_no,
+                        revision=_pf.revision,
+                        ocr_flag=method_to_ocr_flag(method),
+                        status="success",
+                        filename=fname,
+                    )
+                except Exception as _e:
+                    logger.warning(f"  写处理日志失败（不影响结果）: {_e}")
+
             except Exception as e:
                 logger.error(f"  FAIL [{i+1}/{len(file_paths)}] {fname}: {e}")
                 job["files"][i]["status"] = "failed"

@@ -20,6 +20,15 @@ from modules.text_replacer import replace_in_all_regions
 logger = logging.getLogger(__name__)
 
 
+def _make_output_path(out_dir: str, file_path: str, out_ext: str) -> str:
+    """输出文件保持原名；若输出目录与输入目录相同则加 _replaced 后缀避免覆盖输入。"""
+    basename = os.path.splitext(os.path.basename(file_path))[0]
+    in_dir = os.path.dirname(os.path.abspath(file_path))
+    if os.path.abspath(out_dir) == in_dir:
+        basename = basename + "_replaced"
+    return os.path.join(out_dir, basename + out_ext)
+
+
 def _scan_files(input_dir: str) -> list[str]:
     """扫描输入目录中所有支持的文件"""
     files = []
@@ -60,7 +69,7 @@ def process_single_file(
     if ext == ".pdf" and is_vector_pdf(file_path):
         vector_dir = os.path.join(output_dir, "vector")
         os.makedirs(vector_dir, exist_ok=True)
-        output_path = os.path.join(vector_dir, "H" + basename + ".pdf")
+        output_path = _make_output_path(vector_dir, file_path, ".pdf")
         result = replace_text_in_pdf(file_path, output_path, prefixes=prefixes)
         return {
             "file": file_path,
@@ -164,7 +173,7 @@ def process_single_file(
         out_ext = '.tif'
     else:
         out_ext = orig_ext
-    output_path = os.path.join(ocr_dir, "H" + basename + "-R" + out_ext)
+    output_path = _make_output_path(ocr_dir, file_path, out_ext)
     if out_ext in ('.tif', '.tiff'):
         Image.fromarray(modified).save(output_path, compression="tiff_lzw")
     else:

@@ -18,6 +18,14 @@ from pathlib import Path
 
 from config import PROCESS_LOG_DB_PATH
 
+# ── 测试期开关 ──────────────────────────────────────────────
+# 处理日志除写入 SQLite 表外，同时追加一份 CSV 文件（data/process_log.csv），
+# 便于测试期直接打开查看 O/N 等记录。
+# 【测试完毕改回】：把下面 _WRITE_CSV_LOG 设为 False（或删除 _append_csv 调用），
+# 生产以 SQLite 表 process_log 为准、供 PLM 读取，无需 CSV。
+_WRITE_CSV_LOG = True
+_CSV_LOG_PATH = os.path.join(os.path.dirname(PROCESS_LOG_DB_PATH), "process_log.csv")
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS process_log (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,7 +91,29 @@ class ProcessLog:
                  ocr_flag, work_seq, status,
                  datetime.now().isoformat(timespec="seconds")),
             )
-            return cur.lastrowid
+            row_id = cur.lastrowid
+        if _WRITE_CSV_LOG:
+            self._append_csv(drawing_no, revision, filename, ocr_flag,
+                             work_seq, docnumber, status)
+        return row_id
+
+    def _append_csv(self, drawing_no, revision, filename, ocr_flag,
+                    work_seq, docnumber, status):
+        """测试期：追加一行到 CSV，便于直接查看。生产可关闭（见文件头 _WRITE_CSV_LOG）。"""
+        try:
+            new = not os.path.exists(_CSV_LOG_PATH)
+            os.makedirs(os.path.dirname(_CSV_LOG_PATH), exist_ok=True)
+            with open(_CSV_LOG_PATH, "a", encoding="utf-8-sig", newline="") as f:
+                import csv
+                w = csv.writer(f)
+                if new:
+                    w.writerow(["处理日期", "图号", "版本", "文件名",
+                                "处理方式(O/N)", "状态", "文件ID", "批次号"])
+                w.writerow([datetime.now().isoformat(timespec="seconds"),
+                            drawing_no or "", revision or "", filename or "",
+                            ocr_flag, status, docnumber or "", work_seq or ""])
+        except Exception:
+            pass
 
     def list_recent(self, limit: int = 100) -> list[dict]:
         with self._connect() as conn:

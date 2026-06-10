@@ -292,10 +292,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "无修订",
                                      "当前图没有任何已确认文字的框，未保存。")
             return
-        out_dir = self._current_file.parent / "edited"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / (self._current_file.stem + "_edited" +
-                              self._current_file.suffix)
+        # 直接覆盖原图（同目录、原名，不新建子目录、不加后缀）
+        out_path = self._current_file
         try:
             render_committed_boxes(
                 self._current_file,
