@@ -1,15 +1,22 @@
-"""Watch folder daemon — §12 Phase 3。
+"""Watch folder daemon — 文件夹监听入口。
+
+⚠️ 定位说明（v4 方案）：
+  本模块是【测试 / 备用入口】，不是生产主入口。
+  - 生产 PLM 对接 = Oracle 双表直连（R_V_TD_FILEPATH + SIPM197），
+    由对方实现，对方的对接层直接 import 并调用 modules.batch_processor
+    .process_single_file()，不经过本模块。
+  - 本模块（丢文件进 inbox 文件夹即处理）保留用于【本地端到端测试】：
+    在没有真实 Oracle 环境时，是验证"检测→OCR→替换→写O/N日志"整条
+    处理链路的唯一便捷入口。
+  - 两个入口共用同一处理核心 process_single_file，切换只是"启动谁"，
+    不需要改代码、不需要重新打包。生产部署时本 watcher 不启动即可。
 
 职责（单线程，轮询模式，不依赖 watchdog）：
   1. 每 `WATCH_SCAN_INTERVAL` 秒扫描 inbox\
   2. 跟踪每个新文件的 (size, mtime)；连续 `WATCH_STABILITY_SECONDS` 秒不变 → 视为稳定
-  3. 把稳定文件移到 processing\（防止 PLM 重复触发）
+  3. 把稳定文件移到 processing\（防止重复触发）
   4. 解析 drawing_no / revision，入 SQLite 队列 (source='watch_folder')
   5. 失败的文件交给 Worker 在处理失败时移到 failed\（不归 watcher 管）
-
-不在本阶段做：
-  - inotify / ReadDirectoryChangesW（轮询足以应付 ~秒级延迟，UNC 路径上事件 API 还经常掉事件）
-  - PLM SOA API 调用
 """
 from __future__ import annotations
 

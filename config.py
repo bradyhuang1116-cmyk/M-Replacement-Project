@@ -35,13 +35,10 @@ VLLM_CONFIG_PATH = os.getenv(
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
 VLLM_MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "PaddleOCR-VL-1.5-0.9B")
 
-# ── Docker 容器配置 ──
-DOCKER_CONTAINER_NAME = os.getenv("DOCKER_CONTAINER_NAME", "paddleocr-vl-vllm")
+# ── Docker 容器配置（NodexelOCR 自打镜像，模型已封装在镜像内，零挂载启动）──
+DOCKER_CONTAINER_NAME = os.getenv("DOCKER_CONTAINER_NAME", "nodexel")
 DOCKER_CONTAINER_PORT = int(os.getenv("DOCKER_CONTAINER_PORT", "8080"))
-DOCKER_IMAGE = os.getenv(
-    "DOCKER_IMAGE",
-    "ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu",
-)
+DOCKER_IMAGE = os.getenv("DOCKER_IMAGE", "nodexelocr:v1")
 
 # ── API 服务网络 ──
 API_HOST = os.getenv("API_HOST", "0.0.0.0")

@@ -1,19 +1,22 @@
 # 服务化改造 · 交接文档
 
-> **目标读者**：接手后续 §12 Phase 4–10 改造（队列日志、API、前端、打包、部署）的工程师
-> **基准日期**：2026-05-28
+> **目标读者**：接手后续改造（API、前端、打包、部署、联调）的工程师
+> **基准日期**：2026-05-28（V4 方案更新：2026-06-09）
 > **作者**：Brady Huang（前期负责人）
-> **配套文档**：详细架构请参见 [plm_integration_design.md](plm_integration_design.md)（本文件是它的执行视图，不重复其内容）
+> **权威方案**：[v4_final_roadmap.md](v4_final_roadmap.md)（推理服务=NodexelOCR 自打镜像，PLM=Oracle 双表直连）。本文与其冲突时以 v4 为准。
+> **配套文档**：[plm_integration_design.md](plm_integration_design.md) 为旧的 Watch Folder 架构，**已被 v4 取代，仅作历史参考**。
 
 ---
 
 ## 0. TL;DR
 
 - 这是一个**已在生产可用**的图纸 Y 编号批量替换系统，目前由人工 GUI 触发。
-- 正在改造成**服务化形态**，对接客户（三菱电机）的 **Teamcenter PLM**。
-- 改造拆 10 个 Phase，**Phase 1–3 已完成**（环境变量化 + SQLite 队列 + Worker + Watch Folder），smoke 测试通过；**Phase 4–10 待做**。
+- 正在改造成**服务化形态**，对接客户（三菱电机）的 PLM。
+- V4 最终方案三个工作包**均已完成**：NodexelOCR 自打镜像（模型 COPY 进镜像，零挂载）+ Nuitka 编译（modules/ 全部 + config.py → `.pyd`）+ manual_editor 打包（`ManualEditor.exe`）；处理日志表（`modules/process_log.py`）已完成。
+- **PLM 对接 = Oracle 双表直连**（`R_V_TD_FILEPATH` + `SIPM197`），**由对方实现**，我方仅提供 `process_single_file()` 接口。**不是文件夹监听**。
+- `watch_folder` 为**测试/备用入口**（无真实 Oracle 时本地验证处理链路），**生产时不启动**。
 - 核心 OCR / 替换算法**不在改造范围内**——已经稳定，不要碰。
-- `manual_editor/` 子目录是另一条独立产品线（PySide6 桌面工具），**完全不在本次服务化改造范围内**。
+- `manual_editor/` 子目录是另一条独立产品线（PySide6 桌面工具），已打包为 `ManualEditor.exe`。
 
 ---
 
@@ -38,32 +41,35 @@
 
 ### 1.3 服务化目标
 
-让客户 IT 在不需要工程师操作 GUI 的前提下完成端到端流程：
+让客户 IT 在不需要工程师操作 GUI 的前提下完成端到端流程（V4 = Oracle 双表直连，由对方实现）：
 
 ```
-PLM 工作流触发  →  推图纸到 inbox\        ←─┐
-                       ↓                    │ 内网共享盘（UNC 路径）
-              OCR 服务监听到新文件          │
-                       ↓                    │
-              稳定性窗口（3s 大小不变）     │
-                       ↓                    │
-              移到 processing\ + 入 SQLite  │
-                       ↓                    │
-              单线程 Worker 独占 GPU 处理   │
-                       ↓                    │
-              产物落到 output\          ────┘  PLM 监听这里 → 进审核
-              失败源文件移到 failed\
+PLM 工作流写任务  →  R_V_TD_FILEPATH (ISPROCESS='0')   ←─┐
+                       ↓                                  │ 对方的 Oracle 对接层
+              对方轮询任务表 + 查 SIPM197 定位            │
+                       ↓                                  │
+              拼物理盘绝对路径（D:\PLM... + LOCATION）     │
+                       ↓                                  │
+              调我方 process_single_file(file, out_dir)   │
+                       ↓                                  │
+              我方返回 {status, method, total, path}      │
+                       ↓                                  │
+              对方据 method 回写 OCR 字段(O/N) + 归档  ───┘  事务回写双表
 ```
+
+> 备用本地测试入口（`watch_folder`）：无真实 Oracle 时，把图纸丢进 inbox\ 即可走同一条处理链路验证，**生产不启动**。
 
 **不变的承诺**：
 
-- 客户 IT **不动 PLM 任何代码**（PLM 用文件流转触发，不调 SOA API）
-- OCR 服务对 PLM **零侵入**
-- 所有路径 / 端口 / Docker 配置走 env，IT 改 `.env` 即可，不改 Python
+- PLM Oracle 对接层**由对方实现**，我方零侵入，只提供 `process_single_file()` 接口
+- 模型封装进 NodexelOCR 镜像、算法编译为 `.pyd`，客户拿不到源码/模型
+- 所有路径 / 端口 / 配置走 env / server.properties，IT 改配置即可，不改 Python
 
 ---
 
-## 2. 整体架构（当前状态）
+## 2. 整体架构（V4 当前状态）
+
+> 旧的 Watch Folder + UNC 共享盘流转架构已被 Oracle 双表直连取代，下图按 v4 更新。
 
 ### 2.1 三段式
 
@@ -72,31 +78,29 @@ PLM 工作流触发  →  推图纸到 inbox\        ←─┐
 │                       Windows Host                              │
 │                                                                 │
 │   ┌──────────────┐   localhost:8080   ┌──────────────────┐     │
-│   │              │ ◄──────────────────│ Docker 容器       │     │
-│   │ FastAPI app  │   POST /v1/...     │ PaddleOCR-VL-vllm│     │
-│   │ (api/main.py)│                    │ （第三方镜像）    │     │
-│   │              │                    │                  │     │
-│   │  + Worker    │                    │ - GPU 直通       │     │
-│   │  (queue 消费)│                    │ - 模型卷挂载     │     │
+│   │              │ ◄──────────────────│ NodexelOCR 容器   │     │
+│   │ FastAPI app  │   POST /v1/...     │ (nodexelocr:v1)  │     │
+│   │ (api/main.py)│                    │                  │     │
+│   │              │                    │ - GPU 直通       │     │
+│   │  + Worker    │                    │ - 模型已封装进镜像│     │
+│   │  (queue 消费)│                    │   (零挂载)        │     │
 │   │              │                    │ - 业务代码不在内 │     │
-│   │  + WatchFold │                    └──────────────────┘     │
-│   │  (扫 inbox)  │                                             │
-│   │              │   SQLite                                    │
+│   │  算法核心=.pyd│                    └──────────────────┘     │
+│   │  (Nuitka)    │   SQLite                                    │
 │   │              │ ◄────────┐  data/queue.db (WAL)             │
-│   └──────────────┘          │                                  │
+│   └──────────────┘          │  + process_log.db (审计/PLM)     │
 │         ▲                   │                                  │
 │         │ HTTP              │                                  │
 │         │ :8000             │                                  │
 └─────────┼───────────────────┼──────────────────────────────────┘
           │                   │
-   ┌──────┴───────┐    ┌──────┴───────┐
-   │ Dashboard    │    │ UNC 共享盘    │
-   │ (Next.js)    │    │ inbox\        │
-   │ 当前位置:    │    │ processing\   │
-   │ 工程师本地   │    │ output\       │
-   └──────────────┘    │ failed\       │
-                       │ ← PLM 写入 / 读取 │
-                       └────────────────┘
+   ┌──────┴───────┐    ┌──────┴──────────────────────┐
+   │ Dashboard    │    │ 对方的 PLM Oracle 对接层      │
+   │ (Next.js)    │    │  轮询 R_V_TD_FILEPATH         │
+   │ 工程师本地   │    │  定位 SIPM197 → 拼物理盘路径   │
+   │              │    │  调 process_single_file()     │
+   └──────────────┘    │  事务回写双表 OCR 字段(O/N)    │
+                       └───────────────────────────────┘
 ```
 
 ### 2.2 关键决策
@@ -105,9 +109,10 @@ PLM 工作流触发  →  推图纸到 inbox\        ←─┐
 |---|---|---|
 | 队列存储 | **SQLite WAL 模式** | 单进程单 Worker，无并发瓶颈；自带持久化、零运维；客户不用部 Redis/Postgres |
 | Worker 并发 | **单线程顺序消费** | GPU 显存 12 GB，VLM 推理已经吃满，不能并发 |
-| 触发机制 | **文件夹轮询**（不用 watchdog） | UNC 路径上 ReadDirectoryChangesW 经常掉事件；轮询稳定 |
-| 稳定性窗口 | **3 秒 size+mtime 不变** | 防止 PLM 写到一半就被读 |
-| OCR 推理服务 | **第三方 Docker 镜像** | PaddlePaddle 官方镜像，复杂依赖（CUDA + vLLM + Paddle）打好了 |
+| PLM 触发机制 | **Oracle 双表直连**（由对方实现） | 客户既有 PLM 任务表 `R_V_TD_FILEPATH` + 定位表 `SIPM197`；我方提供 `process_single_file()` 接口 |
+| 本地测试入口 | **watch_folder 文件夹轮询**（仅备用） | 无真实 Oracle 时本地验证处理链路；生产不启动 |
+| OCR 推理服务 | **NodexelOCR 自打镜像**（nodexelocr:v1） | 模型 COPY 进镜像内部、零挂载、镜像改名隐藏来源；由 docker_manager 自动启 |
+| 源码保护 | **Nuitka 编译为 `.pyd`** | modules/ 全部 + config.py 编译成机器码，客户拿不到可读源码 |
 | 业务代码部署 | **Windows host 原生 Python**（不进 Docker） | manual_editor 是 PySide6 桌面 GUI，host 上必然要装 Python；分两份维护成本不划算 |
 
 ---
@@ -120,8 +125,8 @@ Mitsubishi-Electric-Drawing-Replacement-Project/
 ├── config.py                     ★ 全局配置：所有 env 入口在这里
 ├── start_v2.py                   后端启动脚本（python start_v2.py）
 ├── start_v2.bat / .vbs           Windows 快捷启动
-├── start_vllm_server.bat         单独启 Docker 容器（不启 FastAPI）
-├── vllm_config.yaml              vLLM 推理引擎超参
+├── start_vllm_server.bat         （已废弃）旧的单独启容器脚本；现由 docker_manager 自动启 nodexelocr:v1
+├── vllm_config.yaml              vLLM 推理引擎超参（已 COPY 进 NodexelOCR 镜像）
 ├── requirements_local.txt        host 端 Python 依赖
 ├── .env.example                  ★ 所有可调 env 的样例与说明
 ├── .gitignore                    （已加入 data/*.db、data/processed/ 等）
@@ -144,23 +149,25 @@ Mitsubishi-Electric-Drawing-Replacement-Project/
 │   ├── pdf_vector_handler.py     矢量 PDF 路径（fast path）
 │   ├── region_detector.py        4 类框检测主算法（3136 行，最复杂）
 │   ├── factory_note_pixel.py     工厂注意区像素级检测（1200 行）
-│   ├── vlm_ocr_engine.py         PaddleOCR-VL-1.5 HTTP 客户端
+│   ├── vlm_ocr_engine.py         PaddleOCR-VL-1.5 HTTP 客户端（连 NodexelOCR 容器）
 │   ├── text_replacer.py          行内文字替换 + 字形匹配（1814 行）
 │   ├── batch_processor.py        process_single_file() 入口编排
 │   │
-│   │  ── 服务化新增（Phase 1–3）──
-│   ├── docker_manager.py         启停 Docker 容器、健康检查（Phase 1 改 env 化）
-│   ├── job_queue.py              ★ SQLite 队列（Phase 2 新增）
-│   ├── worker.py                 ★ 单线程 Worker 消费者（Phase 2 新增）
-│   ├── watch_folder.py           ★ inbox 轮询监听（Phase 3 新增）
-│   └── filename_parser.py        ★ 文件名解析 drawing_no / revision（Phase 3 新增）
+│   │  ── 服务化新增 ──
+│   ├── docker_manager.py         启停 NodexelOCR 容器(nodexelocr:v1 零挂载)、健康检查
+│   ├── job_queue.py              ★ SQLite 队列
+│   ├── worker.py                 ★ 单线程 Worker 消费者
+│   ├── process_log.py            ★ 处理日志表（记 O/N，开放给 PLM 访问）
+│   ├── watch_folder.py           inbox 轮询监听（测试/备用入口，生产不启动）
+│   └── filename_parser.py        文件名解析 drawing_no / revision（测试/备用入口）
 │
 ├── docs/                         ★ 设计文档
-│   ├── plm_integration_design.md 架构主文档（必读）
+│   ├── plm_integration_design.md ⚠️ 旧 Watch Folder 架构，已被 v4 取代（仅 §3.6 日志表/O-N 有效）
+│   ├── v4_final_roadmap.md       ★ 权威方案（NodexelOCR 镜像 + Nuitka + Oracle 直连）
 │   ├── handover.md               ← 本文件
-│   └── legacy/                   V1 时期部署文档（已 deprecated，Phase 10 会重写）
+│   └── legacy/                   V1 时期部署文档（已 deprecated）
 │
-├── manual_editor/                ★★ 完全独立的桌面 GUI 工具，不属于服务化改造范围
+├── manual_editor/                ★★ 独立桌面 GUI 工具，已打包为 ManualEditor.exe
 │   ├── main.py                   PySide6 入口
 │   ├── app/                      MVVM 模块
 │   ├── tests/                    pytest 用例
@@ -181,7 +188,7 @@ Mitsubishi-Electric-Drawing-Replacement-Project/
 │       ├── output/               处理完产物（PLM 监听）
 │       └── failed/               失败源文件
 │
-├── models/                       PaddleOCR-VL 模型权重（>5GB，git 忽略）
+├── models/                       （已废弃）模型权重不再放宿主机；已封装进 NodexelOCR 镜像内
 ├── fonts/                        中日替换字体
 ├── logs/                         运行日志
 │
@@ -213,7 +220,7 @@ Mitsubishi-Electric-Drawing-Replacement-Project/
 
 - **OS**：Windows 11 / Windows Server 2019+
 - **GPU**：NVIDIA RTX 40/50 系，**显存 ≥ 12 GB**（VLM 推理硬性要求）
-- **CUDA / 驱动**：随 PaddleOCR-VL Docker 镜像（host 只需要 NVIDIA 驱动 + Docker Desktop）
+- **CUDA / 驱动**：随 NodexelOCR 镜像（host 只需要 NVIDIA 驱动 + Docker Desktop + Container Toolkit）
 - **Python**：3.10+ via Miniconda env `mitsubishi`
 - **完整 Python 路径（**不要用 `conda run`**）**：
   ```
@@ -225,8 +232,9 @@ Mitsubishi-Electric-Drawing-Replacement-Project/
 ### 4.2 启动顺序（手动开发模式）
 
 ```powershell
-# 1. 启 vLLM 推理容器（等模型加载约 3 分钟，端口 8080）
-.\start_vllm_server.bat
+# 1. 启 NodexelOCR 推理容器（模型已封装进镜像，零挂载；等加载约 3 分钟，端口 8080）
+#    点"开始识别"时由 docker_manager.py 自动启动；也可手动：
+docker run -d --gpus all -p 8080:8080 nodexelocr:v1
 
 # 2. 启后端 API（端口 8000）
 .\start_v2.bat
@@ -259,9 +267,9 @@ python-dotenv>=1.0            # ★ Phase 1 新加
 | `API_PORT` | 8000 | 8000 或客户指定 |
 | `API_CORS_ORIGINS` | `*` | `https://plm.intranet.example.com`（收紧） |
 | `VLLM_BASE_URL` | `http://localhost:8080/v1` | 同主机 → 不改 |
-| `DOCKER_IMAGE` | `paddleocr-genai-vllm-server:latest-nvidia-gpu` | 客户可换私有 registry |
-| `VLLM_MODEL_DIR` | `<repo>/models/PaddleOCR-VL-1.5` | 客户共享盘上 → 改 UNC |
-| `WATCH_INBOX_DIR` | `data/watch/inbox` | `\\plmserver\share\drawings\inbox` |
+| `DOCKER_IMAGE` | `nodexelocr:v1` | 自打镜像，模型已内置；零挂载 |
+| ~~`VLLM_MODEL_DIR`~~ | ~~`<repo>/models/...`~~ | 已废弃：模型在镜像内置路径 `/home/paddleocr/models/PaddleOCR-VL-1.5`，宿主机不再挂载 |
+| `WATCH_INBOX_DIR` | `data/watch/inbox` | （测试/备用入口）本地端到端验证用 |
 | `WATCH_OUTPUT_DIR` | `data/watch/output` | `\\plmserver\share\drawings\processed` |
 | `WATCH_FAILED_DIR` | `data/watch/failed` | `\\plmserver\share\drawings\failed` |
 | `WATCH_PROCESSING_DIR` | `data/watch/processing` | 建议留在**本机磁盘**（性能 + 防 PLM 二次触发） |
@@ -384,24 +392,20 @@ python-dotenv>=1.0            # ★ Phase 1 新加
 
 ---
 
-## 6. 未完成的改造（Phase 4–10）
+## 6. 改造进度（V4 工作包 + 未完成项）
 
-按 `plm_integration_design.md` §12 的工作量表：
+> 权威方案见 `v4_final_roadmap.md`。三个工作包均已完成，下列标 ✅ 的为已落地项，未标的为后续可选增强（API/前端/部署）。
 
-### 6.1 Phase 4 — 日志表 + N/O 自动判定 + 元数据兜底（2~3 天）
+### 6.1 处理日志表 + N/O 判定（**已完成**）
 
-**目的**：
+**当前状态**：✅ **已完成**（`modules/process_log.py`）。
 
-- 队列日志和处理日志分离（queue.db 只管 pending/running/done/failed 状态机；process_log.db 是审计日志）
-- 文件能 fail-fast 判断走矢量还是 OCR 路径（目前已经在 `batch_processor.is_vector_pdf()` 里有判定，需要在元数据层显式记录）
-- 文件名解析失败时（matched=False），实现 §3.7 描述的 sidecar 兜底（`xxx.tif.meta.json`）
+- 队列日志和处理日志分离（queue.db 只管 pending/running/done/failed 状态机；process_log 是审计日志）
+- `worker.py` 在 `process_single_file` 完成后写一条 process_log（含 method、用时、替换数、错误信息）
+- O/N 判定：`method=="ocr"` → **O（使用 OCR）**；`method=="vector"` → **N（未使用 OCR，矢量直改）**
+- 该日志表**开放给 PLM 访问**（对方据 method 回写 Oracle 的 OCR 字段）
 
-**关键变更点**：
-
-- 新建 `modules/process_log.py`，schema 见 `plm_integration_design.md` §8.2
-- `worker.py` 在 `process_single_file` 完成后写一条 process_log（包含 method=vector/ocr、用时、替换数、错误信息）
-- `filename_parser.py` 加 sidecar 解析分支
-- 新增 `data/process_log.db` 路径配置
+**关键文件**：`modules/process_log.py`，schema 与 O/N 定义见 `plm_integration_design.md` §3.6 / §8.2（该部分仍有效）。
 
 ### 6.2 Phase 5 — 内部 API（鉴权 + 日志查询 + 设置）（2~3 天）
 
@@ -445,32 +449,27 @@ python-dotenv>=1.0            # ★ Phase 1 新加
 
 **重要**：`manual_editor/` 子目录是**独立产品线**，前任明确说过"不要动 manual_editor/"。Phase 7 只是给它加 CLI 入口，**不重构其内部**。
 
-### 6.5 Phase 8 — Docker 化（**已排除，详见 §6.7**）
+### 6.5 自打 NodexelOCR 镜像（**已采纳并完成，详见 §6.7**）
 
-### 6.6 Phase 9 — PyInstaller 打包（2~3 天）
+### 6.6 manual_editor 打包（**已完成**）
 
-**目的**：把 host 端 Python 服务打成 Windows .exe，客户 IT 一个文件装完。
+**当前状态**：✅ **已完成**——`manual_editor` 已打包为 `ManualEditor.exe`（独立产品线，不重构其内部）。后端服务的 Windows Service 封装（NSSM）+ 离线依赖打包见 v4 工作包 3。
 
-**关键变更点**：
+### 6.7 自打 NodexelOCR 镜像（**已采纳并完成**）
 
-- 后端 + Worker + WatchFolder 打成单个 `mitsubishi-ocr-service.exe`，注册为 Windows Service
-- `manual_editor` 打成 `mitsubishi-manual-editor.exe`，配合 URL 协议
-- 安装器（推荐 Inno Setup）：放权重 + 写 env + 注册服务 + 注册 URL 协议
+> ⚠️ **历史更正**：本文档早期版本曾把"自打镜像"标为❌已排除，那是旧判断。V4 方案已**采纳**自打镜像，且**已完成**。以下为最新状态。
 
-### 6.7 Phase 8 — Docker 化（**当前明确排除**）
+**当前状态**：✅ **已完成**（`nodexelocr:v1`）。
 
-**当前状态**：**不做**。
+**做了什么**：
 
-**为什么排除**：
+- 把模型从"运行时挂载"改为 **COPY 进镜像内部**（内置路径 `/home/paddleocr/models/PaddleOCR-VL-1.5`），宿主机不再放 `models/`，也不挂载
+- 镜像改名 `nodexelocr:v1`，隐藏 paddleocr/baidu 技术来源
+- 启动零挂载：`docker run -d --gpus all -p 8080:8080 nodexelocr:v1`
+- `modules/docker_manager.py` 已改为启 `nodexelocr:v1`，在点"开始识别"时自动触发
+- 三层保护：模型在镜像内 + 镜像中性命名 + 算法 Nuitka `.pyd`
 
-- 客户 IT 是否能在 Windows Server 上装 WSL2 + Docker Desktop 未确认（>250 人企业用 Docker Desktop 需付费）
-- GPU 直通 WSL2 故障定位要在 host / WSL / container 三层之间穿
-- manual_editor 是 PySide6 桌面 GUI，**只能 Windows 原生跑**，做了 Docker 也要同时维护一份 host 部署
-- UNC 路径多绕一层（PLM → Windows → WSL2 → docker volume），故障面变大
-
-**只有什么时候做**：客户 IT 明确要求"全 docker / docker-compose 部署"时。Phase 9 完成后随时可以补做，不阻塞首期上线。
-
-**注意区分**：**第三方** PaddleOCR-VL Docker 镜像（业务必需，永远要用）≠ **自己打** Docker 镜像（Phase 8，已排除）。`modules/docker_manager.py` 管的是前者，不在排除范围。
+**docker_manager 管的就是它**：`modules/docker_manager.py` 现在管的是 `nodexelocr:v1`（自打镜像），不再是旧的第三方百度镜像 + 卷挂载。
 
 ### 6.8 Phase 10 — 部署文档 + 操作手册 + 联调（3~5 天）
 
@@ -489,7 +488,7 @@ python-dotenv>=1.0            # ★ Phase 1 新加
 ### 7.1 上手第一周
 
 1. **跑通现有流程**（不改任何代码）：
-   - 装 `requirements_local.txt`，启 vLLM 容器，跑 `python start_v2.py`，前端 `npm run dev`
+   - 装 `requirements_local.txt`，启 NodexelOCR 容器（`docker run -d --gpus all -p 8080:8080 nodexelocr:v1`），跑 `python start_v2.py`，前端 `npm run dev`
    - 用 dashboard GUI 处理 5 张测试图，确认输出正确
 2. **跑两个 smoke 测试**：
    ```bash
@@ -497,8 +496,11 @@ python-dotenv>=1.0            # ★ Phase 1 新加
    "C:/Users/Brady Huang/miniconda3/envs/mitsubishi/python.exe" test_watch_folder_smoke.py
    ```
    两个都应该 PASS。
-3. **读三份文档**：
-   - `docs/plm_integration_design.md`（架构 + 接口规范 + DB schema 全在这）
+3. **读文档**：
+   - `docs/v4_final_roadmap.md`（权威方案：NodexelOCR 镜像 + Nuitka + Oracle 直连）
+   - `docs/plm_integration_design.md`（⚠️ 旧 Watch Folder 架构，仅 §3.6 日志表/O-N 定义仍有效）
+   - `docs/handover.md`（本文件）
+   - `CLAUDE.md`（协作风格）
    - `docs/handover.md`（本文件）
    - `CLAUDE.md`（协作风格）
 
@@ -532,7 +534,7 @@ Phase 10（文档 + 联调）              ← 收尾
 | 改 dashboard 那几个 V2 历史组件 | 等 Phase 5 接口稳定再统一改 |
 | 跑 `conda run` 启 Python | 用完整路径 `C:\Users\Brady Huang\miniconda3\envs\mitsubishi\python.exe` |
 | 单步提交 `.tmp_pptx/` 目录 | PPT 临时产物，不入仓库 |
-| 自作主张做 Phase 8（Docker 化） | 已排除，做之前先和客户/Brady 确认 |
+| 自作主张改 PLM 对接逻辑 | PLM = Oracle 双表直连，**由对方实现**；我方只维护 `process_single_file()` 接口契约 |
 | 把 V2 GUI 的 `api/routes/jobs.py` 改成走队列 | 那是给工程师本地 GUI 用的，**保留并存**，等前端三页做完再考虑合并 |
 
 ### 7.4 通用质量原则
@@ -568,10 +570,10 @@ Phase 10（文档 + 联调）              ← 收尾
 # 单独跑 Worker（不启 FastAPI）
 "C:/Users/Brady Huang/miniconda3/envs/mitsubishi/python.exe" -m modules.worker
 
-# 单独跑 WatchFolder（不启 FastAPI / Worker）
+# 单独跑 WatchFolder（测试/备用入口，生产不启动）
 "C:/Users/Brady Huang/miniconda3/envs/mitsubishi/python.exe" -m modules.watch_folder
 
-# 检查 vLLM 健康
+# 检查 NodexelOCR 推理服务健康
 curl http://localhost:8080/v1/models
 
 # 看队列状态
@@ -590,5 +592,5 @@ cd dashboard && npm install && npm run dev
 - **环境**：conda env `mitsubishi`
 - **开发期最常用工具**：Claude Code（VSCode 扩展），见 `CLAUDE.md`
 
-如果新接手人需要回溯任何一个 Phase 的细节决策，先看 `plm_integration_design.md`，再 `git log -p modules/<file>.py` 看具体改动，最后实在不清楚再回来问。
+如果新接手人需要回溯方案决策，先看 `docs/v4_final_roadmap.md`（权威），再 `git log -p modules/<file>.py` 看具体改动，最后实在不清楚再回来问。
 

@@ -11,8 +11,6 @@ from config import (
     DOCKER_CONTAINER_NAME,
     DOCKER_CONTAINER_PORT,
     DOCKER_IMAGE as _CFG_DOCKER_IMAGE,
-    VLLM_MODEL_DIR,
-    VLLM_CONFIG_PATH,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,9 +19,6 @@ logger = logging.getLogger(__name__)
 CONTAINER_NAME = DOCKER_CONTAINER_NAME
 CONTAINER_PORT = DOCKER_CONTAINER_PORT
 DOCKER_IMAGE = _CFG_DOCKER_IMAGE
-
-_MODEL_PATH = VLLM_MODEL_DIR
-_CONFIG_PATH = VLLM_CONFIG_PATH
 
 
 def _run(cmd: list[str], timeout: int = 30) -> tuple[int, str]:
@@ -90,21 +85,14 @@ def start_vllm_container() -> tuple[bool, str]:
     else:
         _run(["docker", "rm", "-f", CONTAINER_NAME])
 
-        model_mount = _MODEL_PATH.replace("\\", "/")
-        config_mount = _CONFIG_PATH.replace("\\", "/")
-
+        # NodexelOCR 自打镜像：模型 + vllm_config 已 COPY 进镜像，
+        # ENTRYPOINT 已设好，零挂载启动即可。
         cmd = [
             "docker", "run", "-d",
             "--name", CONTAINER_NAME,
             "--gpus", "all",
             "-p", f"{CONTAINER_PORT}:8080",
-            "-v", f"{model_mount}:/models/PaddleOCR-VL-1.5:ro",
-            "-v", f"{config_mount}:/config/vllm_config.yaml:ro",
             DOCKER_IMAGE,
-            "bash", "-c",
-            "mkdir -p /home/paddleocr/.paddlex/official_models "
-            "&& cp -r /models/PaddleOCR-VL-1.5 /home/paddleocr/.paddlex/official_models/PaddleOCR-VL-1.5 "
-            "&& paddleocr genai_server --model_name PaddleOCR-VL-1.5-0.9B --host 0.0.0.0 --port 8080 --backend vllm --backend_config /config/vllm_config.yaml",
         ]
 
         code, out = _run(cmd, timeout=60)

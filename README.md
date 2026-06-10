@@ -2,7 +2,7 @@
 
 > 日文工程图纸自动识别 + Y 编号批量改写 + PLM 集成 OCR 服务
 > 客户：**三菱电机（日本）** · 装备制造行业
-> 当前状态：**生产可用 + 服务化改造进行中（§12 Phase 1–3 已完成，Phase 4–10 待做）**
+> 当前状态：**生产可用 + V4 最终方案已落地（NodexelOCR 自打镜像 + Nuitka 编译 + manual_editor exe 均已完成；PLM Oracle 对接由对方实现）**
 
 ---
 
@@ -28,14 +28,15 @@
 - Windows 10/11 或 Windows Server 2019+
 - NVIDIA GPU，显存 ≥ 12 GB（VLM 推理硬性要求）
 - Miniconda + conda env `mitsubishi`（Python 3.10+）
-- Docker Desktop（启 PaddleOCR-VL 推理容器用）
+- Docker Desktop（跑 NodexelOCR 推理容器用）
 - Node.js（前端开发用）
 
 ### 三步启动
 
 ```bash
-# 1. 启动 vLLM 推理容器（等模型加载约 3 分钟，端口 8080）
-.\start_vllm_server.bat
+# 1. 启动 NodexelOCR 推理容器（模型已封装进镜像，零挂载；等加载约 3 分钟，端口 8080）
+#    点"开始识别"时由 docker_manager.py 自动启动；也可手动启：
+docker run -d --gpus all -p 8080:8080 nodexelocr:v1
 
 # 2. 启动后端 API（端口 8000）
 .\start_v2.bat
@@ -52,8 +53,9 @@ cd dashboard && npm install && npm run dev
 
 | 文档 | 给谁看 | 内容 |
 |---|---|---|
+| **[docs/v4_final_roadmap.md](docs/v4_final_roadmap.md)** | 所有人 | **权威方案**。NodexelOCR 自打镜像 + Nuitka 编译 + PLM Oracle 直连，其他文档与它冲突时以它为准 |
 | **[docs/handover.md](docs/handover.md)** | 接手服务化改造的工程师 | **必读**。当前进度、文件用途、未完成任务、不要碰的边界 |
-| **[docs/plm_integration_design.md](docs/plm_integration_design.md)** | 架构决策方 | 整体架构、接口规范、数据库 schema、待客户确认事项 |
+| [docs/plm_integration_design.md](docs/plm_integration_design.md) | 历史参考 | ⚠️ 旧的 Watch Folder 文件夹监听架构，已被 v4 的 Oracle 直连取代；仅 §3.6 日志表/O-N 定义仍有效 |
 | [CLAUDE.md](CLAUDE.md) | AI 协作场景 | LLM 协作风格规范（人也能看） |
 | [docs/legacy/客户端部署指南.md](docs/legacy/客户端部署指南.md) | 历史参考 | ⚠️ V1 部署清单（已 deprecated，待 Phase 10 重写） |
 | [docs/legacy/部署文档.md](docs/legacy/部署文档.md) | 历史参考 | ⚠️ V1 部署说明（同上） |
@@ -68,8 +70,8 @@ cd dashboard && npm install && npm run dev
 .
 ├── config.py                     全局配置入口（所有 env 读取在这）
 ├── start_v2.py / .bat / .vbs     后端启动脚本
-├── start_vllm_server.bat         单独启 vLLM 容器
-├── vllm_config.yaml              vLLM 推理超参
+├── start_vllm_server.bat         （已废弃）旧的单独启容器脚本；现由 docker_manager 自动启 nodexelocr:v1
+├── vllm_config.yaml              vLLM 推理超参（已 COPY 进 NodexelOCR 镜像）
 ├── requirements_local.txt        host Python 依赖
 ├── .env.example                  所有可调 env 示例 + 说明
 │
@@ -83,19 +85,21 @@ cd dashboard && npm install && npm run dev
 │   ├── text_replacer.py          OCR + 字形替换（不要碰）
 │   ├── factory_note_pixel.py     工厂注意区检测（不要碰）
 │   ├── pdf_vector_handler.py     矢量 PDF 路径
-│   ├── vlm_ocr_engine.py         PaddleOCR-VL HTTP 客户端
-│   ├── docker_manager.py         vLLM 容器启停 + 健康检查
+│   ├── vlm_ocr_engine.py         NodexelOCR (PaddleOCR-VL) HTTP 客户端
+│   ├── docker_manager.py         NodexelOCR 容器启停 + 健康检查（用 nodexelocr:v1 零挂载）
 │   ├── job_queue.py              SQLite 队列（§12 Phase 2）
 │   ├── worker.py                 单线程 Worker（§12 Phase 2）
-│   ├── watch_folder.py           inbox 轮询监听（§12 Phase 3）
-│   └── filename_parser.py        文件名→drawing_no/rev 解析（§12 Phase 3）
+│   ├── process_log.py            处理日志表（记 O/N，开放给 PLM 访问）
+│   ├── watch_folder.py           inbox 轮询监听（测试/备用入口，生产不启动）
+│   └── filename_parser.py        文件名→drawing_no/rev 解析（测试/备用入口）
 │
 ├── dashboard/                    Next.js 前端（工程师 GUI）
 ├── manual_editor/                PySide6 桌面工具（独立产品线，不在服务化改造范围）
 ├── docs/                         设计与交接文档
 ├── data/                         队列 DB + Worker 产物 + watch 目录（git 忽略内容）
-├── models/                       PaddleOCR-VL 模型权重（git 忽略）
 ├── fonts/                        中日字体（替换字形用）
+
+注：模型权重不再放宿主机 models/，已封装进 NodexelOCR 镜像内部（零挂载）。
 │
 ├── test_queue_worker_smoke.py    Phase 2 烟雾测试
 └── test_watch_folder_smoke.py    Phase 3 端到端烟雾测试
@@ -103,22 +107,20 @@ cd dashboard && npm install && npm run dev
 
 ---
 
-## 当前进度（§12 PLM 集成改造）
+## 当前进度（V4 最终方案，详见 [docs/v4_final_roadmap.md](docs/v4_final_roadmap.md)）
 
-| Phase | 内容 | 状态 |
+| 项 | 内容 | 状态 |
 |---|---|---|
-| 1 | 路径外部化（环境变量化 + `.env.example`） | ✅ 完成（未提交） |
-| 2 | SQLite 队列 + 单线程 Worker | ✅ 完成（未提交） |
-| 3 | Watch Folder + 文件名解析 + 文件路由 | ✅ 完成（未提交） |
-| 4 | 处理日志表 + N/O 自动判定 + 元数据兜底 | ⏳ 待做（推荐起点） |
-| 5 | 内部 API（鉴权 + 日志查询 + 设置接口） | ⏳ 待做 |
-| 6 | 前端三页（设置 / 待审核列表 / 日志） | ⏳ 待做 |
-| 7 | manual_editor CLI 参数 + URL 协议注册 | ⏳ 待做 |
-| ~~8~~ | ~~Docker 化（自打镜像 + compose）~~ | ❌ 已排除（详见 handover §6.7） |
-| 9 | PyInstaller 打包 + Windows 安装器 | ⏳ 待做 |
-| 10 | 部署文档 + 操作手册 + 联调 | ⏳ 待做 |
+| 1 | 路径外部化（环境变量化 + `.env.example`） | ✅ 完成 |
+| 2 | SQLite 队列 + 单线程 Worker | ✅ 完成 |
+| 3 | Watch Folder + 文件名解析（测试/备用入口，生产不启动） | ✅ 完成 |
+| 4 | 处理日志表（`modules/process_log.py`，记 O/N，开放给 PLM） | ✅ 完成 |
+| 工作包1 | 自打 NodexelOCR 镜像（模型 COPY 进镜像 + 来源隐藏） | ✅ 完成（nodexelocr:v1） |
+| 工作包2 | Nuitka 编译（modules/ 全部 + config.py → `.pyd`） | ✅ 完成 |
+| 工作包3 | 源码/工具封装（manual_editor → `ManualEditor.exe`） | ✅ 完成 |
+| PLM 对接 | Oracle 双表直连（`R_V_TD_FILEPATH` + `SIPM197`） | 对方实现，我方提供 `process_single_file()` 接口 |
 
-**详情**：[docs/handover.md](docs/handover.md) §5（已完成）+ §6（未完成）
+**详情**：[docs/v4_final_roadmap.md](docs/v4_final_roadmap.md)（权威方案）+ [docs/handover.md](docs/handover.md)（执行视图）
 
 ---
 

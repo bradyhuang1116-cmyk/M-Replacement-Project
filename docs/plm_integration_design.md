@@ -1,5 +1,8 @@
 # OCR 服务化与 PLM (Teamcenter) 集成设计
 
+> ⚠️ **已被取代（仅作历史参考）**：本文档的 PLM 对接架构（**Watch Folder 文件夹监听** + Docker on WSL2）已被 [v4_final_roadmap.md](v4_final_roadmap.md) 的 **Oracle 双表直连方案**（`R_V_TD_FILEPATH` + `SIPM197`，由对方实现，我方提供 `process_single_file()` 接口）取代。文件夹监听不再是生产主入口（`watch_folder` 降级为测试/备用入口）。请以 v4 文档为权威依据。
+> **以下内容仍然有效**：§3.6 日志表 schema 与 O/N 字段定义（**O=使用 OCR / method=ocr，N=未使用 OCR / method=vector**）——该表已实现为 `modules/process_log.py`，开放给 PLM 访问。
+
 > **状态**：架构设计已定型，待客户/TC 顾问确认少量细节后即可进入实现。
 > **更新日期**：2026-05-28
 > **作者**：Brady Huang

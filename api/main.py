@@ -19,7 +19,11 @@ from config import API_CORS_ORIGINS
 app = FastAPI(
     title="三菱图纸替换API",
     description="图纸Y→HY批量替换系统REST API",
-    version="2.0.0"
+    version="2.0.0",
+    # 关闭自带交互文档页（内部 API，不对用户暴露）
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # CORS配置（默认 ["*"] 全通；可通过 API_CORS_ORIGINS 环境变量逗号分隔限制）
