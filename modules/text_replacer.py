@@ -39,8 +39,8 @@ def _get_ocr(lang: str = "en"):
 
 def _parse_ocr_results(result):
     """
-    从 PaddleOCR 返回值中提取 (polygon, text, confidence) 列表。
-    兼容 PaddleOCR 不同版本的返回结构。
+    从 OCR 引擎返回值中提取 (polygon, text, confidence) 列表。
+    兼容不同版本的返回结构。
     """
     items = []
     if not result:

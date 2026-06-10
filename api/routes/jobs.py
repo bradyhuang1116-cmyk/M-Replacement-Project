@@ -108,7 +108,7 @@ def _run_job(job: dict):
         try:
             from modules.region_detector import _get_ocr_v5
             _get_ocr_v5("en")
-            logger.info("PaddleOCR v5 预热完成")
+            logger.info("OCR 引擎预热完成")
         except Exception as e:
             logger.warning(f"模型预热异常(继续处理): {e}")
 
@@ -164,11 +164,8 @@ def _run_job(job: dict):
                 job["files"][i]["error"] = str(e)
 
             gc.collect()
-            try:
-                import paddle
-                paddle.device.cuda.empty_cache()
-            except Exception:
-                pass
+            from modules.batch_processor import clear_gpu_cache
+            clear_gpu_cache()
 
     finally:
         job["phase"] = "idle"

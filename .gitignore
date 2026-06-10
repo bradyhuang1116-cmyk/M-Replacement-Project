@@ -69,3 +69,10 @@ build_tools/dist/
 build_tools/work/
 build_tools/*.log
 *.spec.bak
+
+# Nuitka 编译输出（含 .pyi stub，会暴露依赖名，绝不入库）
+build/
+*.pyi
+nuitka-crash-report.xml
+# 会话状态
+.omc/

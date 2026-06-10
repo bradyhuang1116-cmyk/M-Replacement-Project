@@ -48,19 +48,26 @@ echo "  → app/modules/*.pyd（全模块编译，无源码）"
 
 # <!--PART2-PLACEHOLDER-->
 
-# ── 3. 应用代码（仅 api + manual_editor 保留 .py + fonts）──
+# ── 3. 应用代码 + 审核工具 exe + 字体 ──
 echo ""
-echo "[3/5] 拷贝应用代码（modules+config 已是 .pyd，仅 api/manual_editor 保留 .py）..."
+echo "[3/5] 拷贝应用代码与审核工具..."
 cp modules/__init__.py "$OUT/app/modules/" 2>/dev/null || true
 cp -r api "$OUT/app/"
 cp -r fonts "$OUT/app/"
 cp start_v2.py "$OUT/app/"
-[ -d manual_editor ] && cp -r manual_editor "$OUT/app/" && rm -rf "$OUT/app/manual_editor/__pycache__"
+# 审核工具交付编译好的 exe（不拷源码）
+if [ -f build_tools/dist/ManualEditor.exe ]; then
+    mkdir -p "$OUT/ManualEditor"
+    cp build_tools/dist/ManualEditor.exe "$OUT/ManualEditor/"
+    echo "  → ManualEditor/ManualEditor.exe"
+else
+    echo "  ⚠️ build_tools/dist/ManualEditor.exe 不存在，先打包：python -m PyInstaller build_tools/manual_editor.spec"
+fi
 if [ -d "dashboard/node_modules" ]; then
     cp -r dashboard "$OUT/app/" && rm -rf "$OUT/app/dashboard/.next"
 fi
 rm -rf "$OUT/app/modules/__pycache__" "$OUT/app/api/__pycache__"
-echo "  → app/（modules 算法为 .pyd，其余 .py）"
+echo "  → app/（modules+config 为 .pyd）"
 
 # ── 4. Python 依赖离线 wheel（含 oracledb for PLM 对接）──────
 echo ""
@@ -82,7 +89,7 @@ server.ip=10.237.126.127
 PROP
 [ -f scripts/nssm.exe ] && cp scripts/nssm.exe "$OUT/offline/" || echo "  ⚠️ scripts/nssm.exe 不存在，请手动放入 offline/"
 cp scripts/install_service.bat "$OUT/" 2>/dev/null || true
-cp docs/v4_final_roadmap.md "$OUT/docs/" 2>/dev/null || true
+# 交付文档单独编写后放入 $OUT/docs/（内部设计文档不进交付包）
 
 echo ""
 echo "=================================================="

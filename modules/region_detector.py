@@ -348,7 +348,7 @@ def _ocr_region(image_rgb: np.ndarray, bbox: BBox, lang: str = OCR_LANG_EN,
                 engine: str = "v5") -> list:
     """对指定区域做 OCR，返回 [(text, confidence, poly), ...]。
 
-    engine: "v5" = PaddleOCR v5（红框定位用），"vlm" = VLM（绿框/橙框用）。
+    engine: "v5" = 本地 OCR 引擎 v5（红框定位用），"vlm" = VLM（绿框/橙框用）。
     自动放大小区域 + 加白色 padding + 锐化。
     """
     _get_ocr, _parse_ocr_results = _get_ocr_funcs(engine)
@@ -2945,7 +2945,7 @@ def detect_all_regions(
     # 橙框搜索区域: 依赖红框结果，Phase B 后动态计算
 
     # ── Phase B: 裁切子图 + 4路并行 OCR 检测 ──
-    # 每个线程独立创建 PaddleOCR 实例（线程本地缓存），避免共享 predictor
+    # 每个线程独立创建 OCR 引擎实例（线程本地缓存），避免共享 predictor
     from concurrent.futures import ThreadPoolExecutor
     logger.info("Phase B: 裁切子图并行检测（3线程）...")
 

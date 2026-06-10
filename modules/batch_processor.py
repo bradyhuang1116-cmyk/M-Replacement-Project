@@ -231,7 +231,7 @@ def process_batch(
             })
         finally:
             # 释放单个文件的大对象（img_array/enhanced/modified 等局部数组
-            # 在 process_single_file 返回后已无引用，但 numpy/Paddle 临时缓冲
+            # 在 process_single_file 返回后已无引用，但 numpy/GPU 临时缓冲
             # 不一定立刻归还系统）。每张图纸跑完强制一次 gc，降低任务管理器
             # 看到的 RAM 峰值；不影响结果。
             gc.collect()
@@ -293,3 +293,12 @@ def _save_report(results: list[dict], output_dir: str):
                 f.write(f"  {os.path.basename(r['file'])}: {r.get('error', 'unknown')}\n")
 
     logger.info(f"报告已保存: {report_path}")
+
+
+def clear_gpu_cache():
+    """释放 GPU 显存缓存（单张处理后调用，降低显存峰值）。"""
+    try:
+        import paddle
+        paddle.device.cuda.empty_cache()
+    except Exception:
+        pass

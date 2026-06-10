@@ -1,4 +1,4 @@
-"""PaddleOCR-VL-1.5 适配器 — 通过 vLLM HTTP API 调用，提供与 PaddleOCR v5 兼容的接口"""
+"""VLM OCR 适配器 — 通过 vLLM HTTP API 调用，提供与本地 OCR 引擎兼容的接口"""
 
 import re
 import io
@@ -100,16 +100,16 @@ def _vllm_chat(base_url: str, model_name: str,
 
 
 class VlmOcrEngine:
-    """PaddleOCR-VL-1.5 适配器（vLLM HTTP API）。
+    """VLM OCR 适配器（vLLM HTTP API）。
 
-    predict(image) 返回与 PaddleOCR v5 兼容的结构，
+    predict(image) 返回与本地 OCR 引擎兼容的结构，
     可直接被 _parse_ocr_results() 消费。
     """
 
     def __init__(self, base_url: str, model_name: str):
         self._base_url = base_url
         self._model_name = model_name
-        logger.info(f"VLM 引擎: vLLM HTTP → {base_url}, model={model_name}")
+        logger.info(f"VLM 引擎已连接: {base_url}")
 
     def _to_pil(self, image) -> Image.Image:
         if isinstance(image, Image.Image):
@@ -129,7 +129,7 @@ class VlmOcrEngine:
             pil_image, prompt, max_tokens)
 
     def predict(self, image) -> list[dict]:
-        """兼容 PaddleOCR v5 的 predict() 接口。
+        """与本地 OCR 引擎兼容的 predict() 接口。
 
         返回 [{"dt_polys": [...], "rec_texts": [...], "rec_scores": [...]}]
         """

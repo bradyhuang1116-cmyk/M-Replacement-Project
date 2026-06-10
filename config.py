@@ -21,17 +21,7 @@ FONT_PATH = os.getenv(
 )
 PDF_FONT_PATH = os.getenv("PDF_FONT_PATH", FONT_PATH)
 
-# ── vLLM 模型目录 / 配置文件 ──（docker run 挂载用）
-VLLM_MODEL_DIR = os.getenv(
-    "VLLM_MODEL_DIR",
-    os.path.join(BASE_DIR, "models", "PaddleOCR-VL-1.5"),
-)
-VLLM_CONFIG_PATH = os.getenv(
-    "VLLM_CONFIG_PATH",
-    os.path.join(BASE_DIR, "vllm_config.yaml"),
-)
-
-# ── VLM OCR 引擎配置（PaddleOCR-VL-1.5 via vLLM HTTP）────────────
+# ── VLM OCR 引擎配置（VLM OCR 引擎 via HTTP）────────────
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
 VLLM_MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "PaddleOCR-VL-1.5-0.9B")
 

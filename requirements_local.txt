@@ -1,10 +1,6 @@
-# NodexelOCR 应用服务依赖（与生产环境一致，供离线 pip download / install）
-# 注意：版本须与 .pyd 编译环境一致（Python 3.10），否则可能 ABI 不兼容
-#
-# PaddleOCR-VL 模型推理在 NodexelOCR 容器内（不在此清单）；
-# 本清单是宿主机 app 侧依赖：PaddleOCR v5 + PP-DocLayout 本地推理 + 图像处理 + Oracle 对接
+# 应用服务依赖（Python 3.10，须与编译环境一致）
 
-# 深度学习 / OCR（GPU 版，本地跑 v5 + 版面检测）
+# 推理与图像处理
 paddlepaddle-gpu==3.3.0
 paddleocr==3.4.0
 paddlex==3.4.2
@@ -15,10 +11,10 @@ opencv-python-headless>=4.10
 Pillow>=10.0
 numpy>=2.2
 
-# PLM Oracle 对接（thin 模式，无需 Instant Client）
+# 数据库对接（thin 模式，无需客户端库）
 oracledb>=2.0
 
-# 后端 API 服务（FastAPI + uvicorn）
+# 后端 API 服务
 fastapi>=0.110
 uvicorn>=0.30
 python-multipart>=0.0.9
