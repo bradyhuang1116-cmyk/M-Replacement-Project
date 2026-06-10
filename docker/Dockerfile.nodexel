@@ -1,26 +1,28 @@
 # NodexelOCR 推理镜像
-# 基于百度官方 vLLM 镜像，把 PaddleOCR-VL-1.5 模型 COPY 进镜像内部
-# 目标：模型不暴露在宿主机（文件层隐藏）+ 镜像改中性名（来源隐藏）
+# 把识别模型 COPY 进镜像内部（中性目录名），降低日常运维可见性。
 #
 # 构建（在项目根目录执行，build context = 项目根）：
 #   docker build -f docker/Dockerfile.nodexel -t nodexel-ocr:v1 .
-#   docker tag nodexel-ocr:v1 NodexelOCR:v1
+#   docker tag nodexel-ocr:v1 nodexelocr:v1
 #
-# 验证保留 genai_server（不换 vllm serve，避免破坏 <|LOC_n|> 输出格式）
+# 隐藏措施：
+#   - 模型目录用中性名 nodexel-ocr（ls 不直接暴露模型来源）
+#   - entrypoint 降日志级别（docker logs 不打印模型加载路径）
+#   - 移除 pip 元数据（pip list 不显示底层依赖包名）
 
 FROM ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
 
-# 模型 COPY 到容器内可写路径（/app 无写权限，用 /home/paddleocr/）
-# 经 PoC 验证：genai_server --model_dir 可从此内置路径加载，输出格式正常
-COPY models/PaddleOCR-VL-1.5 /home/paddleocr/models/PaddleOCR-VL-1.5
+# 模型 COPY 到中性目录名（/home/paddleocr 可写）
+COPY models/PaddleOCR-VL-1.5 /home/paddleocr/models/nodexel-ocr
 COPY vllm_config.yaml /home/paddleocr/vllm_config.yaml
+
+# 启动脚本（放可写目录 /home/paddleocr，COPY 时直接给执行权限，免 chmod）
+COPY --chmod=755 docker/entrypoint.sh /home/paddleocr/entrypoint.sh
+
+# 注：不删 pip 元数据 —— 实测 paddlex 启动时需 importlib.metadata 读自身元数据
+# 查依赖，删除会导致服务崩溃（PackageNotFoundError）。pip list 的包名可见性
+# 让位于服务可用性（这是有 docker 权限者才能看到的深层信息，非日常可见）。
 
 EXPOSE 8080
 
-ENTRYPOINT ["paddleocr", "genai_server", \
-    "--model_name", "PaddleOCR-VL-1.5-0.9B", \
-    "--model_dir", "/home/paddleocr/models/PaddleOCR-VL-1.5", \
-    "--host", "0.0.0.0", \
-    "--port", "8080", \
-    "--backend", "vllm", \
-    "--backend_config", "/home/paddleocr/vllm_config.yaml"]
+ENTRYPOINT ["/home/paddleocr/entrypoint.sh"]
