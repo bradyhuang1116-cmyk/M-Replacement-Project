@@ -1,0 +1,5 @@
+# 只需要 models/、vllm_config.yaml、entrypoint.sh 进 build context，其余全排除
+*
+!models/PaddleOCR-VL-1.5/**
+!vllm_config.yaml
+!docker/entrypoint.sh

@@ -1,0 +1,81 @@
+# 环境变量（含 API token，勿提交）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# 输出文件夹
+output/
+results/
+diagnostic_output/
+test_output/
+
+# 临时文件
+*.log
+nul
+temp_*.tif
+logs/
+
+# 持久化数据（§12 Phase 2+）：保留 data/ 目录，忽略其中的 SQLite DB 与产物
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/processed/
+
+# 测试图片（不上传大文件）
+TIF_Undo/
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.pdf
+debug_strike/
+
+# 字体文件（保留 fonts/ 目录下的字体）
+# fonts/*.ttf
+# fonts/*.otf
+
+# GitHub 克隆副本
+Mitsubishi-Electric-Drawing-Replacement-Project/
+
+# IDE
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# VLM 模型文件（约1.8GB，不提交到仓库）
+models/PaddleOCR-VL-1.5/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+
+# Claude
+.claude/
+
+# PyInstaller 打包产物
+build_tools/dist/
+build_tools/work/
+build_tools/*.log
+*.spec.bak
+
+# Nuitka 编译输出（含 .pyi stub，会暴露依赖名，绝不入库）
+build/
+*.pyi
+nuitka-crash-report.xml
+# 会话状态
+.omc/
