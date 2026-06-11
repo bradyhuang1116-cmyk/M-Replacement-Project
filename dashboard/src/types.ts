@@ -54,3 +54,23 @@ export interface ConfigResponse {
   meta: Record<string, ConfigFieldMeta>;
   categories: Record<string, ConfigCategory>;
 }
+
+export type ProcessLogStatus = "success" | "failed";
+export type ProcessMode = "O" | "N";
+
+export interface ProcessLogItem {
+  id: number;
+  drawing_no: string;
+  revision: string | null;
+  filename: string;
+  ocr_flag: ProcessMode;
+  status: ProcessLogStatus;
+  process_date: string;
+  docnumber: string | null;
+  work_seq: string | null;
+}
+
+export interface PaginatedLogs {
+  items: ProcessLogItem[];
+  total: number;
+}

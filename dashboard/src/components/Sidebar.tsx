@@ -4,11 +4,12 @@ import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Database, Settings, Power, RotateCcw } from "lucide-react";
+import { LayoutDashboard, Database, ScrollText, Settings, Power, RotateCcw } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Datasets", href: "/datasets", icon: Database },
+  { name: "Process Logs", href: "/process-logs", icon: ScrollText },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 
@@ -77,7 +78,7 @@ export default function Sidebar() {
         {/* Navigation */}
         <nav className="flex-1 px-3 py-4 space-y-1">
           {navigation.map((item) => {
-            const active = pathname === item.href;
+            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
             return (
               <Link
                 key={item.name}

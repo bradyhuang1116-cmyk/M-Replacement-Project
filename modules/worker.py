@@ -267,6 +267,10 @@ def _main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    from config import VLM_PROVIDER, PADDLEOCR_API_URL
+    logger.info(f"VLM 模式: {VLM_PROVIDER}" + (
+        f" → {PADDLEOCR_API_URL}" if VLM_PROVIDER == "paddleocr_api" else " → 本地 Docker"
+    ))
     queue = JobQueue()
     worker = Worker(queue)
     worker.start()

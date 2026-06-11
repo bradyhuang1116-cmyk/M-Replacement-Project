@@ -1,8 +1,16 @@
-"""VLM OCR 适配器 — 通过 vLLM HTTP API 调用，提供与本地 OCR 引擎兼容的接口"""
+"""VLM OCR 适配器。
+
+支持两种后端：
+1. 本地 NodexelOCR Docker（vLLM OpenAI 风格接口）
+2. PaddleOCR 官方托管 API layout-parsing（测试阶段可无本地 GPU）
+
+对上层统一暴露 predict(image) -> [{"dt_polys", "rec_texts", "rec_scores"}]
+"""
 
 import re
 import io
 import base64
+import json
 import logging
 import threading
 
@@ -69,6 +77,17 @@ def _pil_to_base64(pil_image: Image.Image, max_pixels: int = 1280 * 28 * 28) -> 
     return f"data:image/png;base64,{b64}"
 
 
+def _pil_to_base64_raw(pil_image: Image.Image, max_pixels: int = 1280 * 28 * 28) -> str:
+    w, h = pil_image.size
+    total = w * h
+    if total > max_pixels:
+        scale = (max_pixels / total) ** 0.5
+        pil_image = pil_image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    pil_image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
 def _vllm_chat(base_url: str, model_name: str,
                pil_image: Image.Image, prompt: str,
                max_tokens: int = 4096) -> str:
@@ -99,17 +118,118 @@ def _vllm_chat(base_url: str, model_name: str,
             raise
 
 
-class VlmOcrEngine:
-    """VLM OCR 适配器（vLLM HTTP API）。
+# ── PaddleOCR 托管 API 辅助函数 ───────────────────────────────
 
-    predict(image) 返回与本地 OCR 引擎兼容的结构，
+def _normalize_polygon(poly) -> list[list[int]] | None:
+    if not poly or len(poly) < 4:
+        return None
+    pts = []
+    for pt in poly[:4]:
+        if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+            return None
+        pts.append([int(round(pt[0])), int(round(pt[1]))])
+    return pts
+
+
+def _extract_spotting_items_from_api(result: dict) -> list[dict]:
+    page0 = ((result or {}).get("layoutParsingResults") or [{}])[0] or {}
+    pruned = page0.get("prunedResult") or {}
+    spotting_res = pruned.get("spotting_res")
+    if isinstance(spotting_res, str):
+        try:
+            spotting_res = json.loads(spotting_res)
+        except json.JSONDecodeError:
+            spotting_res = None
+
+    items = []
+    seen = set()
+
+    def _append_item(text, poly):
+        polygon = _normalize_polygon(poly)
+        text = _clean_latex((text or "").strip())
+        if not polygon or not text:
+            return
+        key = (text, tuple((p[0], p[1]) for p in polygon))
+        if key in seen:
+            return
+        seen.add(key)
+        items.append({"text": text, "polygon": polygon})
+
+    if isinstance(spotting_res, dict):
+        candidates = []
+        for key in ("texts", "items", "results", "detections", "boxes"):
+            value = spotting_res.get(key)
+            if isinstance(value, list):
+                candidates.extend(value)
+        if not candidates and {"text", "polygon"} <= set(spotting_res.keys()):
+            candidates = [spotting_res]
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text") or item.get("transcription") or item.get("label")
+            poly = item.get("polygon") or item.get("points") or item.get("box")
+            _append_item(text, poly)
+
+    if items:
+        return items
+
+    for block in page0.get("layoutParsingResults", []):
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text") or block.get("label")
+        poly = block.get("polygon") or block.get("points") or block.get("box")
+        _append_item(text, poly)
+    return items
+
+
+def _extract_plain_text_from_api(result: dict) -> str:
+    page0 = ((result or {}).get("layoutParsingResults") or [{}])[0] or {}
+    pruned = page0.get("prunedResult") or {}
+    spotting_res = pruned.get("spotting_res")
+    if isinstance(spotting_res, str):
+        try:
+            spotting_res = json.loads(spotting_res)
+        except json.JSONDecodeError:
+            spotting_res = None
+    if isinstance(spotting_res, dict):
+        texts = []
+        for key in ("texts", "items", "results", "detections", "boxes"):
+            value = spotting_res.get(key)
+            if not isinstance(value, list):
+                continue
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text") or item.get("transcription") or item.get("label")
+                if text:
+                    texts.append(text)
+        if texts:
+            return "\n".join(texts)
+
+    md_text = ((page0.get("markdown") or {}).get("text")) or ""
+    if md_text:
+        return md_text
+    return ""
+
+
+# ── VLM OCR 引擎类 ────────────────────────────────────────────
+
+class VlmOcrEngine:
+    """VLM OCR 适配器（vLLM 或 PaddleOCR 托管 API）。
+
+    predict(image) 返回与 PaddleOCR v5 兼容的结构，
     可直接被 _parse_ocr_results() 消费。
     """
 
-    def __init__(self, base_url: str, model_name: str):
+    def __init__(self, base_url: str, model_name: str,
+                 provider: str = "vllm", api_token: str = ""):
         self._base_url = base_url
         self._model_name = model_name
-        logger.info(f"VLM 引擎已连接: {base_url}")
+        self._provider = provider
+        self._api_token = api_token
+        logger.info(
+            f"VLM 引擎: provider={provider}, base_url={base_url}, model={model_name}"
+        )
 
     def _to_pil(self, image) -> Image.Image:
         if isinstance(image, Image.Image):
@@ -124,12 +244,45 @@ class VlmOcrEngine:
 
     def _chat(self, pil_image: Image.Image, prompt: str,
               max_tokens: int = 4096) -> str:
+        if self._provider != "vllm":
+            raise RuntimeError(
+                f"_chat 仅支持 vllm 后端，当前 provider={self._provider}"
+            )
         return _vllm_chat(
             self._base_url, self._model_name,
             pil_image, prompt, max_tokens)
 
+    def _paddleocr_api_call(self, pil_image: Image.Image, prompt_label: str) -> dict:
+        if not self._api_token:
+            raise RuntimeError(
+                "PADDLEOCR_API_TOKEN 未配置；请在 .env 中填写官方 token。"
+            )
+        payload = {
+            "file": _pil_to_base64_raw(pil_image),
+            "fileType": 1,
+            "useLayoutDetection": False,
+            "promptLabel": prompt_label,
+            "useDocUnwarping": False,
+            "useDocOrientationClassify": False,
+        }
+        headers = {
+            "Authorization": f"token {self._api_token}",
+            "Content-Type": "application/json",
+        }
+        resp = requests.post(
+            self._base_url, json=payload, headers=headers, timeout=300
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("errorCode", 0) not in (0, None):
+            raise RuntimeError(
+                f"PaddleOCR API 返回错误: errorCode={data.get('errorCode')} "
+                f"message={data.get('errorMsg') or data.get('message') or data}"
+            )
+        return data.get("result") or {}
+
     def predict(self, image) -> list[dict]:
-        """与本地 OCR 引擎兼容的 predict() 接口。
+        """兼容 PaddleOCR v5 的 predict() 接口。
 
         返回 [{"dt_polys": [...], "rec_texts": [...], "rec_scores": [...]}]
         """
@@ -142,8 +295,12 @@ class VlmOcrEngine:
         else:
             effective_w, effective_h = w, h
 
-        raw = self._chat(pil_img, "Spotting:")
-        spotting_items = parse_spotting_output(raw, effective_w, effective_h)
+        if self._provider == "paddleocr_api":
+            result = self._paddleocr_api_call(pil_img, "spotting")
+            spotting_items = _extract_spotting_items_from_api(result)
+        else:
+            raw = self._chat(pil_img, "Spotting:")
+            spotting_items = parse_spotting_output(raw, effective_w, effective_h)
 
         if effective_w != w:
             scale = w / effective_w
@@ -165,6 +322,9 @@ class VlmOcrEngine:
         w, h = pil_img.size
         if w < SPOTTING_UPSCALE_THRESHOLD and h < SPOTTING_UPSCALE_THRESHOLD:
             pil_img = pil_img.resize((w * 2, h * 2), Image.LANCZOS)
+        if self._provider == "paddleocr_api":
+            result = self._paddleocr_api_call(pil_img, "ocr")
+            return _extract_plain_text_from_api(result)
         return self._chat(pil_img, "OCR:")
 
     def query_spotting(self, image) -> tuple[str, int, int]:
@@ -173,12 +333,22 @@ class VlmOcrEngine:
         w, h = pil_img.size
         if w < SPOTTING_UPSCALE_THRESHOLD and h < SPOTTING_UPSCALE_THRESHOLD:
             pil_img = pil_img.resize((w * 2, h * 2), Image.LANCZOS)
+        if self._provider == "paddleocr_api":
+            result = self._paddleocr_api_call(pil_img, "spotting")
+            page0 = ((result or {}).get("layoutParsingResults") or [{}])[0] or {}
+            pruned = page0.get("prunedResult") or {}
+            raw = pruned.get("spotting_res") or json.dumps(result, ensure_ascii=False)
+            if not isinstance(raw, str):
+                raw = json.dumps(raw, ensure_ascii=False)
+            return raw, w, h
         raw = self._chat(pil_img, "Spotting:")
         return raw, w, h
 
     def health_check(self) -> bool:
-        """检查 vLLM 服务器是否可达。"""
+        """检查 VLM 服务是否可用。"""
         try:
+            if self._provider == "paddleocr_api":
+                return bool(self._api_token and self._base_url)
             resp = requests.get(f"{self._base_url}/models", timeout=5)
             return resp.status_code == 200
         except requests.ConnectionError:
@@ -196,8 +366,26 @@ def get_vlm_engine() -> VlmOcrEngine:
     if _engine_instance is None:
         with _engine_lock:
             if _engine_instance is None:
-                from config import VLLM_BASE_URL, VLLM_MODEL_NAME
-                _engine_instance = VlmOcrEngine(VLLM_BASE_URL, VLLM_MODEL_NAME)
+                from config import (
+                    VLM_PROVIDER,
+                    VLLM_BASE_URL,
+                    VLLM_MODEL_NAME,
+                    PADDLEOCR_API_URL,
+                    PADDLEOCR_API_TOKEN,
+                )
+                if VLM_PROVIDER == "paddleocr_api":
+                    _engine_instance = VlmOcrEngine(
+                        PADDLEOCR_API_URL,
+                        "PaddleOCR-VL-1.5",
+                        provider="paddleocr_api",
+                        api_token=PADDLEOCR_API_TOKEN,
+                    )
+                else:
+                    _engine_instance = VlmOcrEngine(
+                        VLLM_BASE_URL,
+                        VLLM_MODEL_NAME,
+                        provider="vllm",
+                    )
     return _engine_instance
 
 

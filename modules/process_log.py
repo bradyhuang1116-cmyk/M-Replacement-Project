@@ -116,8 +116,72 @@ class ProcessLog:
             pass
 
     def list_recent(self, limit: int = 100) -> list[dict]:
+        items, _ = self.query(limit=limit, offset=0)
+        return items
+
+    def query(
+        self,
+        drawing_no: str | None = None,
+        revision: str | None = None,
+        mode: str | None = None,
+        status: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """分页查询处理日志。mode 对应 ocr_flag（O/N）。"""
+        clauses: list[str] = []
+        params: list[object] = []
+
+        if drawing_no:
+            clauses.append("drawing_no LIKE ?")
+            params.append(f"%{drawing_no}%")
+        if revision:
+            clauses.append("revision LIKE ?")
+            params.append(f"%{revision}%")
+        if mode:
+            clauses.append("ocr_flag = ?")
+            params.append(mode.upper())
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if date_from:
+            clauses.append("process_date >= ?")
+            params.append(date_from)
+        if date_to:
+            clauses.append("process_date <= ?")
+            params.append(f"{date_to}T23:59:59")
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM process_log {where}", params
+            ).fetchone()[0]
             rows = conn.execute(
-                "SELECT * FROM process_log ORDER BY id DESC LIMIT ?", (limit,)
+                f"""
+                SELECT * FROM process_log
+                {where}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, limit, offset],
             ).fetchall()
-            return [dict(r) for r in rows]
+        return [dict(r) for r in rows], int(total)
+
+    @staticmethod
+    def to_csv(rows: list[dict]) -> str:
+        """将日志行导出为 CSV 文本（UTF-8 BOM 由调用方处理）。"""
+        import csv
+        import io
+
+        buf = io.StringIO()
+        fields = [
+            "id", "process_date", "drawing_no", "revision", "filename",
+            "ocr_flag", "status", "docnumber", "work_seq",
+        ]
+        w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k, "") or "" for k in fields})
+        return buf.getvalue()

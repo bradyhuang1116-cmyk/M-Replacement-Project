@@ -5,14 +5,14 @@
 """
 import os
 
-# 可选 dotenv —— 装了就用，没装也不挡道（默认仍走系统环境变量）
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 从项目根目录加载 .env（不依赖当前工作目录）
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(os.path.join(BASE_DIR, ".env"))
 except ImportError:
     pass
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ── 字体路径 ──
 FONT_PATH = os.getenv(
@@ -24,6 +24,15 @@ PDF_FONT_PATH = os.getenv("PDF_FONT_PATH", FONT_PATH)
 # ── VLM OCR 引擎配置（VLM OCR 引擎 via HTTP）────────────
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
 VLLM_MODEL_NAME = os.getenv("VLLM_MODEL_NAME", "PaddleOCR-VL-1.5-0.9B")
+# VLM_PROVIDER:
+#   - "vllm": 走本地 NodexelOCR Docker（默认，生产）
+#   - "paddleocr_api": 走 PaddleOCR 官方托管 layout-parsing API（可无本地 GPU 测试）
+VLM_PROVIDER = os.getenv("VLM_PROVIDER", "vllm").strip().lower()
+PADDLEOCR_API_URL = os.getenv(
+    "PADDLEOCR_API_URL",
+    "https://ebi011tbsdc4t6yc.aistudio-app.com/layout-parsing",
+)
+PADDLEOCR_API_TOKEN = os.getenv("PADDLEOCR_API_TOKEN", "")
 
 # ── Docker 容器配置（NodexelOCR 自打镜像，模型已封装在镜像内，零挂载启动）──
 DOCKER_CONTAINER_NAME = os.getenv("DOCKER_CONTAINER_NAME", "nodexel")
@@ -56,6 +65,8 @@ WORKER_OUTPUT_DIR = os.getenv("WORKER_OUTPUT_DIR", os.path.join(DATA_DIR, "proce
 WORKER_POLL_INTERVAL = float(os.getenv("WORKER_POLL_INTERVAL", "1.5"))
 # Worker 单任务失败后的最大重试次数
 WORKER_MAX_RETRY = int(os.getenv("WORKER_MAX_RETRY", "1"))
+# 内部 API 鉴权（Dashboard 日志查询等）；Bearer token 默认值
+DEFAULT_INTERNAL_API_KEY = os.getenv("DEFAULT_INTERNAL_API_KEY", "dev-api-key")
 
 # ── Watch folder（§12 Phase 3）──
 # PLM 投递入口 / 处理中 / 输出 / 失败；默认放在 DATA_DIR/watch/* 便于本地测试
