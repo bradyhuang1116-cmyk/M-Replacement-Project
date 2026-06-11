@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import { apiFetch, apiFetchBlob } from "@/lib/api";
 import type { PaginatedLogs, ProcessLogItem, ProcessLogStatus, ProcessMode } from "@/types";
+import DatePicker from "@/components/DatePicker";
 import { Download, RefreshCcw, Search } from "lucide-react";
 
 interface Filters {
@@ -72,8 +73,7 @@ export default function ProcessLogsPage() {
     return items.filter(
       (item) =>
         item.drawing_no.toLowerCase().includes(q) ||
-        item.filename.toLowerCase().includes(q) ||
-        (item.docnumber || "").toLowerCase().includes(q)
+        item.filename.toLowerCase().includes(q)
     );
   }, [items, search]);
 
@@ -178,17 +178,15 @@ export default function ProcessLogsPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <input
-              type="date"
+            <DatePicker
+              label="From Date"
               value={filters.from}
-              onChange={(e) => setFilters((prev) => ({ ...prev, from: e.target.value }))}
-              className={inputClassName}
+              onChange={(v) => setFilters((prev) => ({ ...prev, from: v }))}
             />
-            <input
-              type="date"
+            <DatePicker
+              label="To Date"
               value={filters.to}
-              onChange={(e) => setFilters((prev) => ({ ...prev, to: e.target.value }))}
-              className={inputClassName}
+              onChange={(v) => setFilters((prev) => ({ ...prev, to: v }))}
             />
           </div>
 
@@ -231,20 +229,18 @@ export default function ProcessLogsPage() {
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Mode</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Revision</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Processed At</th>
-                  <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">File ID</th>
-                  <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Batch No.</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
+                    <td colSpan={5} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
                       Loading...
                     </td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
+                    <td colSpan={5} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
                       No logs match current filters.
                     </td>
                   </tr>
@@ -276,8 +272,6 @@ export default function ProcessLogsPage() {
                       <td className="px-4 py-3 text-xs text-[rgb(163,163,163)]">
                         {new Date(item.process_date).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-xs text-[rgb(163,163,163)]">{item.docnumber || "—"}</td>
-                      <td className="px-4 py-3 text-xs text-[rgb(163,163,163)]">{item.work_seq || "—"}</td>
                     </tr>
                   ))
                 )}
