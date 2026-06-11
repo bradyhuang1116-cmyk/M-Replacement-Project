@@ -107,22 +107,6 @@ export default function ProcessLogsPage() {
               Query automatic processing records with filters for drawing no., revision, date, mode (O/N), and CSV export.
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => void loadItems(filters)}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-[rgb(64,64,64)] bg-[rgb(23,23,23)] text-sm text-[rgb(212,212,212)] hover:bg-[rgb(38,38,38)] transition-colors"
-            >
-              <RefreshCcw size={16} />
-              Refresh
-            </button>
-            <button
-              onClick={() => void downloadCsv()}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-blue-500/30 bg-blue-500/15 text-sm text-blue-300 hover:bg-blue-500/25 transition-colors"
-            >
-              <Download size={16} />
-              Export CSV
-            </button>
-          </div>
         </div>
 
         {error && (
@@ -206,6 +190,21 @@ export default function ProcessLogsPage() {
               className="px-4 py-2 rounded-lg border border-[rgb(64,64,64)] text-sm text-[rgb(212,212,212)] hover:bg-[rgb(38,38,38)] transition-colors"
             >
               Clear
+            </button>
+            <div className="w-px bg-[rgb(64,64,64)]" />
+            <button
+              onClick={() => void loadItems(filters)}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-[rgb(64,64,64)] bg-[rgb(23,23,23)] text-sm text-[rgb(212,212,212)] hover:bg-[rgb(38,38,38)] transition-colors"
+            >
+              <RefreshCcw size={16} />
+              Refresh
+            </button>
+            <button
+              onClick={() => void downloadCsv()}
+              className="ml-auto inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-blue-500/30 bg-blue-500/15 text-sm text-blue-300 hover:bg-blue-500/25 transition-colors"
+            >
+              <Download size={16} />
+              Export CSV
             </button>
           </div>
         </section>
