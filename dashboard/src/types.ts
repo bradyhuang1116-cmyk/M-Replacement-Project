@@ -33,3 +33,24 @@ export interface JobState {
   progress: number;
   logs: string[];
 }
+
+export interface ConfigFieldMeta {
+  type: "text" | "number" | "multi_select";
+  label: string;
+  category: string;
+  description?: string;
+  options?: string;
+  step?: number;
+  max_length?: number;
+}
+
+export interface ConfigCategory {
+  description: string;
+  icon: string;
+}
+
+export interface ConfigResponse {
+  current: Record<string, unknown>;
+  meta: Record<string, ConfigFieldMeta>;
+  categories: Record<string, ConfigCategory>;
+}

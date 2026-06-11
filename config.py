@@ -138,5 +138,12 @@ DEFAULT_REGIONS = {
 }
 FALLBACK_REGIONS = DEFAULT_REGIONS
 
+# ── Oracle PLM 对接 ───────────────────────────────────────────
+ORACLE_HOST = os.getenv("ORACLE_HOST", "")
+ORACLE_PORT = int(os.getenv("ORACLE_PORT", "1521"))
+ORACLE_SERVICE_NAME = os.getenv("ORACLE_SERVICE_NAME", "")
+ORACLE_USER = os.getenv("ORACLE_USER", "")
+ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD", "")
+
 # 文件格式
 SUPPORTED_EXTENSIONS = {".pdf", ".tif", ".tiff", ".jpg", ".jpeg", ".png"}

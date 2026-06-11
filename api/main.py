@@ -13,7 +13,7 @@ logging.basicConfig(
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import drawings, health, jobs, gpu, folders, system
+from api.routes import config, drawings, health, jobs, gpu, folders, system
 from config import API_CORS_ORIGINS
 
 app = FastAPI(
@@ -42,6 +42,7 @@ app.include_router(jobs.router, prefix="/api/v1", tags=["任务管理"])
 app.include_router(gpu.router, prefix="/api/v1", tags=["GPU监控"])
 app.include_router(folders.router, prefix="/api/v1", tags=["文件夹"])
 app.include_router(system.router, prefix="/api/v1", tags=["系统管理"])
+app.include_router(config.router, prefix="/api/v1", tags=["配置管理"])
 
 @app.on_event("startup")
 async def startup_event():
