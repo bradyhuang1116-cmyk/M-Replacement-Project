@@ -1,0 +1,8 @@
+# 推理后端配置
+
+gpu-memory-utilization: 0.30
+max-model-len: 8192
+max-num-batched-tokens: 16384
+enforce-eager: true
+enable-prefix-caching: false
+mm-processor-cache-gb: 0

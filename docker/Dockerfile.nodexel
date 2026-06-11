@@ -1,0 +1,13 @@
+# NodexelOCR 推理镜像
+# 构建：docker build -f docker/Dockerfile.nodexel -t nodexel-ocr:v1 .
+#       docker tag nodexel-ocr:v1 nodexelocr:v1
+
+FROM ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
+
+COPY models/PaddleOCR-VL-1.5 /home/paddleocr/models/nodexel-ocr
+COPY vllm_config.yaml /home/paddleocr/vllm_config.yaml
+COPY --chmod=755 docker/entrypoint.sh /home/paddleocr/entrypoint.sh
+
+EXPOSE 8080
+
+ENTRYPOINT ["/home/paddleocr/entrypoint.sh"]
