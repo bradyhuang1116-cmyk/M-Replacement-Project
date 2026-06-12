@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, Database, ScrollText, Settings, Power, RotateCcw } from "lucide-react";
+import ConfirmDialog from "@/components/ConfirmDialog";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -119,85 +119,46 @@ export default function Sidebar() {
         </div>
       </aside>
 
-      {/* Restart confirmation modal */}
-      {showRestart && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-[rgb(23,23,23)] border border-[rgb(38,38,38)] rounded-xl p-6 max-w-sm mx-4 space-y-5">
-            <div className="flex items-center gap-3">
-              <RotateCcw size={20} className="text-blue-400 shrink-0" />
-              <h3 className="text-[rgb(245,245,245)] font-semibold text-base">
-                Restart Backend
-              </h3>
-            </div>
-            <p className="text-sm text-[rgb(163,163,163)] leading-relaxed">
-              The backend server will be restarted. The frontend will reload after the restart completes.
-            </p>
-            <div className="flex gap-3 justify-end pt-1">
-              <button
-                onClick={() => setShowRestart(false)}
-                className="px-4 py-2 rounded-lg text-sm text-[rgb(163,163,163)] hover:bg-[rgb(38,38,38)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleRestart}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30 hover:bg-blue-500/25 transition-colors"
-              >
-                Restart
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={showRestart}
+        onClose={() => setShowRestart(false)}
+        onConfirm={handleRestart}
+        title="Restart Backend"
+        description="Backend will restart. Page reloads when it's back."
+        icon={<RotateCcw size={20} className="text-blue-400 shrink-0" />}
+        confirmLabel="Restart"
+        variant="default"
+      />
 
-      {/* Shutdown confirmation modal */}
-      {showShutdown && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-[rgb(23,23,23)] border border-[rgb(38,38,38)] rounded-xl p-6 max-w-sm mx-4 space-y-5">
-            <h3 className="text-[rgb(245,245,245)] font-semibold text-base">
-              Shutdown System
-            </h3>
-
-            <div className="space-y-3">
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={killDocker}
-                  onChange={(e) => setKillDocker(e.target.checked)}
-                  className="w-4 h-4 rounded border-[rgb(64,64,64)] bg-[rgb(38,38,38)] text-blue-500 focus:ring-blue-500/30 focus:ring-offset-0"
-                />
-                <span className="text-sm text-[rgb(212,212,212)]">
-                  Docker Desktop
-                </span>
-              </label>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={killWsl}
-                  onChange={(e) => setKillWsl(e.target.checked)}
-                  className="w-4 h-4 rounded border-[rgb(64,64,64)] bg-[rgb(38,38,38)] text-blue-500 focus:ring-blue-500/30 focus:ring-offset-0"
-                />
-                <span className="text-sm text-[rgb(212,212,212)]">WSL</span>
-              </label>
-            </div>
-
-            <div className="flex gap-3 justify-end pt-1">
-              <button
-                onClick={() => setShowShutdown(false)}
-                className="px-4 py-2 rounded-lg text-sm text-[rgb(163,163,163)] hover:bg-[rgb(38,38,38)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleShutdown}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-rose-500/15 text-rose-400 border border-rose-500/30 hover:bg-rose-500/25 transition-colors"
-              >
-                Shutdown
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={showShutdown}
+        onClose={() => setShowShutdown(false)}
+        onConfirm={handleShutdown}
+        title="Shutdown System"
+        description="Stops the backend. Uncheck items you want to keep running."
+        icon={<Power size={20} className="text-rose-400 shrink-0" />}
+        confirmLabel="Shutdown"
+        variant="danger"
+      >
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={killDocker}
+            onChange={(e) => setKillDocker(e.target.checked)}
+            className="w-4 h-4 rounded border-[rgb(64,64,64)] bg-[rgb(38,38,38)] text-blue-500 focus:ring-blue-500/30 focus:ring-offset-0"
+          />
+          <span className="text-sm text-[rgb(212,212,212)]">Docker Desktop</span>
+        </label>
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={killWsl}
+            onChange={(e) => setKillWsl(e.target.checked)}
+            className="w-4 h-4 rounded border-[rgb(64,64,64)] bg-[rgb(38,38,38)] text-blue-500 focus:ring-blue-500/30 focus:ring-offset-0"
+          />
+          <span className="text-sm text-[rgb(212,212,212)]">WSL</span>
+        </label>
+      </ConfirmDialog>
     </>
   );
 }

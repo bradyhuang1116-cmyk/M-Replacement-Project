@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import Sidebar from "@/components/Sidebar";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { useConfig } from "@/hooks/useConfig";
 import { Save, CheckCircle, AlertCircle, Cog, HardDrive, Database, RotateCcw, AlertTriangle } from "lucide-react";
 
@@ -280,36 +281,16 @@ export default function SettingsPage() {
         )}
       </main>
 
-      {/* Save confirmation modal */}
-      {showConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-[rgb(23,23,23)] border border-[rgb(38,38,38)] rounded-xl p-6 max-w-sm mx-4 space-y-5">
-            <div className="flex items-center gap-3">
-              <AlertTriangle size={20} className="text-amber-400 shrink-0" />
-              <h3 className="text-[rgb(245,245,245)] font-semibold text-base">
-                Save Configuration
-              </h3>
-            </div>
-            <p className="text-sm text-[rgb(163,163,163)] leading-relaxed">
-              Changes will be saved and require a backend restart to take effect. Are you sure you want to proceed?
-            </p>
-            <div className="flex gap-3 justify-end pt-1">
-              <button
-                onClick={() => setShowConfirm(false)}
-                className="px-4 py-2 rounded-lg text-sm text-[rgb(163,163,163)] hover:bg-[rgb(38,38,38)] transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmSave}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30 hover:bg-blue-500/25 transition-colors"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={showConfirm}
+        onClose={() => setShowConfirm(false)}
+        onConfirm={handleConfirmSave}
+        title="Save Configuration"
+        description="Saved settings need a backend restart to apply."
+        icon={<AlertTriangle size={20} className="text-amber-400 shrink-0" />}
+        confirmLabel="Save"
+        loading={saving}
+      />
     </div>
   );
 }

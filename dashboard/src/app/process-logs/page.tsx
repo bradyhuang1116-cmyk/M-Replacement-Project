@@ -138,7 +138,7 @@ export default function ProcessLogsPage() {
           <div>
             <h1 className="text-lg font-semibold text-[rgb(245,245,245)]">Process Logs</h1>
             <p className="mt-1 text-sm text-[rgb(163,163,163)]">
-              Query automatic processing records with filters for drawing no., revision, date, mode (O/N), and CSV export.
+              Query automatic processing records with filters for drawing no., revision, date, mode (O/N), and Excel export.
             </p>
           </div>
         </div>

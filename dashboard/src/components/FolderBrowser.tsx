@@ -62,15 +62,33 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, title, initia
     }
   }, [isOpen, browse, initialPath]);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-[520px] max-h-[70vh] bg-[rgb(23,23,23)] rounded-xl border border-[rgb(38,38,38)] flex flex-col overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
+      onClick={onClose}
+    >
+      <div
+        className="w-[520px] max-h-[70vh] bg-[rgb(23,23,23)] rounded-xl border border-[rgb(38,38,38)] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-[rgb(38,38,38)]">
           <h3 className="text-sm font-semibold text-[rgb(245,245,245)]">{title}</h3>
-          <button onClick={onClose} className="text-[rgb(115,115,115)] hover:text-white transition-colors">
+          <button
+            onClick={onClose}
+            className="text-[rgb(115,115,115)] hover:text-white transition-colors"
+          >
             <X size={18} />
           </button>
         </div>
