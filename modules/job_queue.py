@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS job_queue (
     file_path    TEXT NOT NULL,
     drawing_no   TEXT,
     revision     TEXT,
+    docnumber    TEXT,
+    work_seq     TEXT,
     status       TEXT NOT NULL,
     retry_count  INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL,
@@ -48,6 +50,8 @@ class Job:
     file_path: str
     drawing_no: str | None
     revision: str | None
+    docnumber: str | None
+    work_seq: str | None
     status: str
     retry_count: int
     created_at: str
@@ -65,6 +69,8 @@ class Job:
             file_path=row["file_path"],
             drawing_no=row["drawing_no"],
             revision=row["revision"],
+            docnumber=row["docnumber"],
+            work_seq=row["work_seq"],
             status=row["status"],
             retry_count=row["retry_count"],
             created_at=row["created_at"],
@@ -111,6 +117,8 @@ class JobQueue:
         file_path: str,
         drawing_no: str | None = None,
         revision: str | None = None,
+        docnumber: str | None = None,
+        work_seq: str | None = None,
     ) -> int:
         if source not in _VALID_SOURCE:
             raise ValueError(f"invalid source: {source!r}")
@@ -118,11 +126,12 @@ class JobQueue:
             cur = conn.execute(
                 """
                 INSERT INTO job_queue (source, source_file, file_path,
-                                       drawing_no, revision, status,
-                                       retry_count, created_at)
-                VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)
+                                       drawing_no, revision, docnumber,
+                                       work_seq, status, retry_count, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
                 """,
-                (source, source_file, file_path, drawing_no, revision, _now_iso()),
+                (source, source_file, file_path, drawing_no, revision,
+                 docnumber, work_seq, _now_iso()),
             )
             return cur.lastrowid
 

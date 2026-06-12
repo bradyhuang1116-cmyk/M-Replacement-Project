@@ -3,12 +3,13 @@
 import { useState, useEffect, useMemo } from "react";
 import Sidebar from "@/components/Sidebar";
 import { useConfig } from "@/hooks/useConfig";
-import { Save, CheckCircle, AlertCircle, Cog, HardDrive, Database } from "lucide-react";
+import { Save, CheckCircle, AlertCircle, Cog, HardDrive, Database, Server } from "lucide-react";
 
 const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   Cog,
   HardDrive,
   Database,
+  Server,
 };
 
 export default function SettingsPage() {
@@ -135,7 +136,7 @@ export default function SettingsPage() {
           <div className="sticky bottom-0 bg-[rgb(10,10,10)] flex items-center justify-end gap-3 px-6 h-25">
             {hasChanges && (
               <span className="text-xs text-[rgb(115,115,115)]">
-                Unsaved changes — will take effect after backend restart
+                Changes will be applied immediately
               </span>
             )}
             <button

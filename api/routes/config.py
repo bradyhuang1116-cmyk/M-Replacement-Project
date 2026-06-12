@@ -29,7 +29,7 @@ async def update_config(req: ConfigUpdateRequest):
     try:
         service.update_overrides(req.overrides)
         logger.info("配置已更新: %s", list(req.overrides.keys()))
-        return {"status": "saved", "restart_required": True}
+        return {"status": "saved", "restart_required": False}
     except ValueError as e:
         logger.warning("配置更新被拒绝: %s", e)
         from fastapi import HTTPException

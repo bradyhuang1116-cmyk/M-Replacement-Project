@@ -18,6 +18,7 @@ from pathlib import Path
 from config import (
     OUTPUT_SUBDIR,
     PDF_REPLACEMENT_SUBDIR,
+    PLM_OUTPUT_BASE_DIR,
     VLMOCR_SUBDIR,
     WATCH_FAILED_DIR,
     WATCH_OUTPUT_DIR,
@@ -91,8 +92,18 @@ class Worker:
         return bool(self._thread and self._thread.is_alive())
 
     # ── 主循环 ──
+    def _sync_config(self) -> None:
+        """从 config 模块重新读取配置值（支持热更新）。"""
+        import config as cfg
+        self.poll_interval = cfg.WORKER_POLL_INTERVAL
+        self.max_retry = cfg.WORKER_MAX_RETRY
+        self.watch_output_dir = str(cfg.WATCH_OUTPUT_DIR)
+        self.watch_failed_dir = str(cfg.WATCH_FAILED_DIR)
+        self.output_root = str(cfg.WORKER_OUTPUT_DIR)
+
     def _run_loop(self) -> None:
         while not self._stop.is_set():
+            self._sync_config()
             job = self.queue.claim_next_pending()
             if job is None:
                 if self._stop.wait(self.poll_interval):
@@ -208,6 +219,83 @@ class Worker:
             )
         except Exception as e:
             logger.warning(f"[job={job.id}] 写处理日志失败（不影响结果）: {e}")
+
+        # ── PLM Oracle 回写（仅 PLM 来源的任务有 docnumber/work_seq）──
+        if job.docnumber and job.work_seq:
+            try:
+                from modules.oracle_helper import OracleHelper
+                from modules.process_log import method_to_ocr_flag
+
+                ocr_flag = method_to_ocr_flag(method)
+                oracle = OracleHelper()
+
+                # 1. 复制产物到 PLM 输出路径 + 尝试 SFTP 上传
+                upload_ok = False
+                if final_path and os.path.exists(final_path):
+                    # 构建 PLM 远程/本地统一路径
+                    plm_out_dir = os.path.join(
+                        PLM_OUTPUT_BASE_DIR,
+                        job.work_seq,
+                        f"{job.drawing_no}-{job.revision}",
+                    )
+                    os.makedirs(plm_out_dir, exist_ok=True)
+                    plm_out_path = os.path.join(plm_out_dir, os.path.basename(final_path))
+                    shutil.copy2(final_path, plm_out_path)
+                    logger.info(f"[job={job.id}] 已复制 (local) 到 PLM 路径: {plm_out_path}")
+
+                    # WinSCP 上传到远程
+                    from modules.winscp_client import WinSCPClient
+                    win = WinSCPClient()
+                    if win.is_available():
+                        ok, err = win.upload(plm_out_path, plm_out_path)
+                        if ok:
+                            logger.info(f"[job={job.id}] 已上传 (SFTP) 到 PLM: {plm_out_path}")
+                            upload_ok = True
+                        else:
+                            logger.warning(f"[job={job.id}] SFTP 上传失败: {err}")
+
+                # 2. 上传成功后：移 output 产物到 uploaded/ 目录
+                if upload_ok and final_path and os.path.exists(final_path):
+                    try:
+                        uploaded_root = os.path.join(os.path.dirname(base_output.rstrip("\\/")), "uploaded")
+                        output_relative = os.path.relpath(final_path, base_output)
+                        uploaded_path = os.path.join(uploaded_root, output_relative)
+                        uploaded_dir = os.path.dirname(uploaded_path)
+                        Path(uploaded_dir).mkdir(parents=True, exist_ok=True)
+                        shutil.move(final_path, uploaded_path)
+                        logger.info(f"[job={job.id}] 已移到 uploaded: {uploaded_path}")
+                    except OSError as e:
+                        logger.warning(f"[job={job.id}] 移文件到 uploaded 失败: {e}")
+
+                # 3. 更新 SIPM197
+                oracle.update_sipm197(
+                    th=job.drawing_no or "",
+                    bbh=job.revision or "",
+                    fname=job.source_file,
+                    docnumber=job.docnumber,
+                    work_seq=job.work_seq,
+                    ocr_flag=ocr_flag,
+                )
+
+                # 4. 更新 R_V_TD_FILEPATH
+                oracle.update_filepath(
+                    th=job.drawing_no or "",
+                    bbh=job.revision or "",
+                    filename=job.source_file,
+                    docnumber=job.docnumber,
+                    work_seq=job.work_seq,
+                    ocr_flag=ocr_flag,
+                )
+                logger.info(f"[job={job.id}] Oracle PLM 回写完成")
+            except Exception as e:
+                logger.warning(f"[job={job.id}] Oracle PLM 回写失败（不影响主流程）: {e}")
+
+        # ── 清理 processing 源文件（无论是否 PLM 任务）──
+        if job.file_path and os.path.isfile(job.file_path):
+            try:
+                os.remove(job.file_path)
+            except OSError as e:
+                logger.warning(f"[job={job.id}] 清理 processing 源文件失败: {e}")
 
     # ── 失败处理 ──
     def _handle_failure(self, job: Job, err: str) -> None:

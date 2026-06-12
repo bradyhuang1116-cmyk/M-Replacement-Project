@@ -111,6 +111,70 @@ CONFIG_META: dict[str, dict] = {
         "label": "Password",
         "description": "Oracle database login password",
     },
+    "ORACLE_MIN_POOL": {
+        "category": "Oracle Database",
+        "type": "number",
+        "label": "Min Pool Size",
+        "description": "Oracle connection pool minimum connections",
+        "step": 1,
+    },
+    "ORACLE_MAX_POOL": {
+        "category": "Oracle Database",
+        "type": "number",
+        "label": "Max Pool Size",
+        "description": "Oracle connection pool maximum connections",
+        "step": 1,
+    },
+    "ORACLE_PATH_PREFIX": {
+        "category": "Oracle Database",
+        "type": "text",
+        "label": "File Path Prefix",
+        "description": "Prefix for SIPM197.LOCATION relative path (e.g. D:\\PLM719\\filedata)",
+    },
+    "PLM_OUTPUT_BASE_DIR": {
+        "category": "Oracle Database",
+        "type": "text",
+        "label": "PLM Output Base",
+        "description": "Base directory for PLM processed output (e.g. D:\\SMEC)",
+    },
+    # WinSCP SFTP
+    "WINSCP_ENABLED": {
+        "category": "WinSCP SFTP",
+        "type": "text",
+        "label": "Enable SFTP",
+        "description": "Set to 'true' to enable WinSCP remote file transfer",
+    },
+    "WINSCP_HOST": {
+        "category": "WinSCP SFTP",
+        "type": "text",
+        "label": "SFTP Host",
+        "description": "Remote SFTP server hostname or IP address",
+    },
+    "WINSCP_PORT": {
+        "category": "WinSCP SFTP",
+        "type": "number",
+        "label": "SFTP Port",
+        "description": "Remote SFTP server port (default: 22)",
+        "step": 1,
+    },
+    "WINSCP_USER": {
+        "category": "WinSCP SFTP",
+        "type": "text",
+        "label": "SFTP Username",
+        "description": "SFTP login username",
+    },
+    "WINSCP_PASSWORD": {
+        "category": "WinSCP SFTP",
+        "type": "text",
+        "label": "SFTP Password",
+        "description": "SFTP login password",
+    },
+    "WINSCP_EXE_PATH": {
+        "category": "WinSCP SFTP",
+        "type": "text",
+        "label": "WinSCP Executable Path",
+        "description": "Full path to WinSCP.exe on this machine",
+    },
 }
 
 CATEGORIES: dict[str, dict] = {
@@ -125,6 +189,10 @@ CATEGORIES: dict[str, dict] = {
     "Oracle Database": {
         "description": "PLM Oracle database connection configuration",
         "icon": "Database",
+    },
+    "WinSCP SFTP": {
+        "description": "SFTP connection settings for remote file transfer via WinSCP",
+        "icon": "Server",
     },
 }
 
@@ -174,6 +242,13 @@ class ConfigService:
                 self._overrides = {}
         else:
             self._overrides = {}
+
+        # 启动时将覆盖值同步到 config 模块属性
+        # 使 from config import X 或 import config; config.X 能读到持久化的值
+        if self._overrides:
+            for k, v in self._overrides.items():
+                setattr(config_module, k, v)
+            logger.info("已将 %d 个覆盖值同步到 config 模块", len(self._overrides))
 
     def _save_overrides(self) -> None:
         path = self._overrides_path()
@@ -259,6 +334,10 @@ class ConfigService:
         with self._overrides_lock:
             self._overrides.update(coerced)
             self._save_overrides()
+
+            # 热应用：更新 config 模块的属性，使 import config; config.X 立即生效
+            for k, v in coerced.items():
+                setattr(config_module, k, v)
 
         return {"status": "ok"}
 

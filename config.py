@@ -155,6 +155,20 @@ ORACLE_PORT = int(os.getenv("ORACLE_PORT", "1521"))
 ORACLE_SERVICE_NAME = os.getenv("ORACLE_SERVICE_NAME", "")
 ORACLE_USER = os.getenv("ORACLE_USER", "")
 ORACLE_PASSWORD = os.getenv("ORACLE_PASSWORD", "")
+ORACLE_MIN_POOL = int(os.getenv("ORACLE_MIN_POOL", "1"))
+ORACLE_MAX_POOL = int(os.getenv("ORACLE_MAX_POOL", "5"))
+# SIPM197.LOCATION 相对路径拼接前缀（文档中 IP 127 → D:\PLM719\filedata，IP 77 → D:\PLM\filedata）
+ORACLE_PATH_PREFIX = os.getenv("ORACLE_PATH_PREFIX", "D:\\PLM719\\filedata")
+# PLM 处理完成输出基目录（文档中的 D:\SMEC）
+PLM_OUTPUT_BASE_DIR = os.getenv("PLM_OUTPUT_BASE_DIR", "D:\\SMEC")
+
+# ── WinSCP SFTP ─────────────────────────────────────────────
+WINSCP_ENABLED = os.getenv("WINSCP_ENABLED", "").strip().lower() == "true"
+WINSCP_HOST = os.getenv("WINSCP_HOST", "192.168.0.125")
+WINSCP_PORT = int(os.getenv("WINSCP_PORT", "22"))
+WINSCP_USER = os.getenv("WINSCP_USER", "Administrator")
+WINSCP_PASSWORD = os.getenv("WINSCP_PASSWORD", "Fd123456")
+WINSCP_EXE_PATH = os.getenv("WINSCP_EXE_PATH", r"C:\WinSCP\WinSCP.exe")
 
 # 文件格式
 SUPPORTED_EXTENSIONS = {".pdf", ".tif", ".tiff", ".jpg", ".jpeg", ".png"}

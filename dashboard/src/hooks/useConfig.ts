@@ -40,7 +40,7 @@ export function useConfig() {
           body: JSON.stringify({ overrides }),
         }
       );
-      setSuccessMsg("Settings saved. Restart backend for changes to take effect.");
+      setSuccessMsg("Settings saved and applied.");
       return result;
     } catch (e) {
       const msg = (e as Error).message;

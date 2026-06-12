@@ -1,1 +1,7 @@
-{}
+{
+  "ORACLE_HOST": "192.168.0.125",
+  "ORACLE_USER": "system",
+  "ORACLE_PASSWORD": "Oracle_2024",
+  "ORACLE_SERVICE_NAME": "dbg13",
+  "WINSCP_ENABLED": "true"
+}
