@@ -16,11 +16,13 @@ const navigation = [
 export default function Sidebar() {
   const pathname = usePathname();
   const [showShutdown, setShowShutdown] = useState(false);
+  const [showRestart, setShowRestart] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [killDocker, setKillDocker] = useState(true);
   const [killWsl, setKillWsl] = useState(true);
 
   const handleRestart = async () => {
+    setShowRestart(false);
     setRestarting(true);
     try {
       await fetch("http://localhost:8000/api/v1/system/restart", {
@@ -99,7 +101,7 @@ export default function Sidebar() {
         {/* Footer */}
         <div className="px-3 pb-3 space-y-2">
           <button
-            onClick={handleRestart}
+            onClick={() => setShowRestart(true)}
             disabled={restarting}
             className="flex items-center gap-3 w-full px-4 py-2.5 rounded-lg text-sm text-[rgb(212,212,212)] hover:bg-[rgb(38,38,38)] transition-colors disabled:opacity-50"
           >
@@ -116,6 +118,37 @@ export default function Sidebar() {
           <div className="px-4 text-xs text-[rgb(115,115,115)]">v2.0.0</div>
         </div>
       </aside>
+
+      {/* Restart confirmation modal */}
+      {showRestart && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-[rgb(23,23,23)] border border-[rgb(38,38,38)] rounded-xl p-6 max-w-sm mx-4 space-y-5">
+            <div className="flex items-center gap-3">
+              <RotateCcw size={20} className="text-blue-400 shrink-0" />
+              <h3 className="text-[rgb(245,245,245)] font-semibold text-base">
+                Restart Backend
+              </h3>
+            </div>
+            <p className="text-sm text-[rgb(163,163,163)] leading-relaxed">
+              The backend server will be restarted. The frontend will reload after the restart completes.
+            </p>
+            <div className="flex gap-3 justify-end pt-1">
+              <button
+                onClick={() => setShowRestart(false)}
+                className="px-4 py-2 rounded-lg text-sm text-[rgb(163,163,163)] hover:bg-[rgb(38,38,38)] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRestart}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500/15 text-blue-400 border border-blue-500/30 hover:bg-blue-500/25 transition-colors"
+              >
+                Restart
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Shutdown confirmation modal */}
       {showShutdown && (
