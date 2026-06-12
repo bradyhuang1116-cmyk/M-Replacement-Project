@@ -39,7 +39,7 @@ def _find_latest_output(output_dir_local: str) -> str:
 
 
 def fetch_remote_file(file_path: str, file_path_local: str) -> str:
-    """TODO(PLM对接): 从远程路径获取原图到本地 inbox。
+    """从远程路径获取原图到本地 inbox（WinSCP SFTP download，不可用时回退本地复制）。
 
     Args:
         file_path: 远程/PLM 侧原图路径
@@ -54,14 +54,28 @@ def fetch_remote_file(file_path: str, file_path_local: str) -> str:
         shutil.copy2(file_path, dest)
         return dest
 
-    raise NotImplementedError(
-        "fetch_remote_file 待 PLM 对接开发实现 "
-        f"(file_path={file_path!r}, file_path_local={file_path_local!r})"
-    )
+    os.makedirs(file_path_local, exist_ok=True)
+    dest = os.path.join(file_path_local, os.path.basename(file_path))
+
+    from modules.winscp_client import WinSCPClient
+
+    win = WinSCPClient()
+    if win.is_available():
+        ok, err = win.download(file_path, dest)
+        if not ok:
+            raise RuntimeError(f"SFTP 下载失败: {file_path} → {dest}: {err}")
+        logger.info("已下载 (SFTP) 到 inbox: %s → %s", file_path, dest)
+        return dest
+
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"源文件不存在且 WinSCP 不可用: {file_path!r}")
+    shutil.copy2(file_path, dest)
+    logger.info("已复制 (local) 到 inbox: %s → %s", file_path, dest)
+    return dest
 
 
 def write_back_to_remote(output_dir: str, output_dir_local: str) -> str:
-    """TODO(PLM对接): 将处理后的文件从本地 output 回写到远程归档路径。
+    """将处理后的文件从本地 output 回写到远程归档路径（WinSCP SFTP upload，不可用时回退本地复制）。
 
     Args:
         output_dir: 远程/PLM 侧归档目录
@@ -77,10 +91,23 @@ def write_back_to_remote(output_dir: str, output_dir_local: str) -> str:
         shutil.copy2(local_output, remote_path)
         return remote_path
 
-    raise NotImplementedError(
-        "write_back_to_remote 待 PLM 对接开发实现 "
-        f"(output_dir={output_dir!r}, output_dir_local={output_dir_local!r})"
-    )
+    local_output = _find_latest_output(output_dir_local)
+    remote_path = os.path.join(output_dir, os.path.basename(local_output))
+
+    from modules.winscp_client import WinSCPClient
+
+    win = WinSCPClient()
+    if win.is_available():
+        ok, err = win.upload(local_output, remote_path)
+        if not ok:
+            raise RuntimeError(f"SFTP 上传失败: {local_output} → {remote_path}: {err}")
+        logger.info("已上传 (SFTP) 到远程: %s → %s", local_output, remote_path)
+        return remote_path
+
+    os.makedirs(output_dir, exist_ok=True)
+    shutil.copy2(local_output, remote_path)
+    logger.info("已复制 (local) 到远程路径: %s → %s", local_output, remote_path)
+    return remote_path
 
 
 def plm_process_drawing(file_path: str, output_dir: str) -> dict:
@@ -118,7 +145,6 @@ def plm_process_drawing(file_path: str, output_dir: str) -> dict:
             "method": "",
             "total": 0,
             "file_path": "",
-            "error": f"fetch_remote_file failed: {e}",
         }
 
     if not local_input_path or not os.path.isfile(local_input_path):
@@ -127,7 +153,6 @@ def plm_process_drawing(file_path: str, output_dir: str) -> dict:
             "method": "",
             "total": 0,
             "file_path": "",
-            "error": f"本地输入文件不存在: {local_input_path!r}",
         }
 
     clear_y_box_records()
@@ -146,7 +171,6 @@ def plm_process_drawing(file_path: str, output_dir: str) -> dict:
             "method": "",
             "total": 0,
             "file_path": "",
-            "error": str(e),
         }
 
     if result.get("status") != "success":
@@ -155,7 +179,6 @@ def plm_process_drawing(file_path: str, output_dir: str) -> dict:
             "method": result.get("method", ""),
             "total": result.get("total", 0),
             "file_path": "",
-            "error": result.get("error", "processing failed"),
         }
 
     try:
@@ -169,7 +192,6 @@ def plm_process_drawing(file_path: str, output_dir: str) -> dict:
             "method": result.get("method", ""),
             "total": result.get("total", 0),
             "file_path": "",
-            "error": f"write_back_to_remote failed: {e}",
         }
 
     logger.info(
