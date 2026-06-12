@@ -24,6 +24,9 @@ fastapi>=0.110
 uvicorn>=0.30
 python-multipart>=0.0.9
 
+# Excel 导出（带样式）
+openpyxl>=3.1
+
 # 工具
 tqdm>=4.65
 requests>=2.28

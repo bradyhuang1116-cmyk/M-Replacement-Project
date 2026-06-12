@@ -170,18 +170,150 @@ class ProcessLog:
         return [dict(r) for r in rows], int(total)
 
     @staticmethod
-    def to_csv(rows: list[dict]) -> str:
-        """将日志行导出为 CSV 文本（UTF-8 BOM 由调用方处理）。"""
-        import csv
+    def to_xlsx(rows: list[dict]) -> bytes:
+        """将日志行导出为带样式的 XLSX 字节流。
+
+        样式与前端暗色仪表盘主题对齐。
+        """
         import io
 
-        buf = io.StringIO()
-        fields = [
-            "id", "process_date", "drawing_no", "revision", "filename",
-            "ocr_flag", "status", "docnumber", "work_seq",
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import (
+                Font, PatternFill, Alignment, Border, Side,
+            )
+        except ImportError:
+            raise RuntimeError(
+                "openpyxl is not installed. Run: pip install openpyxl"
+            )
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Process Logs"
+
+        # ── 样式常量（匹配前端暗色主题） ──
+        HEADER_FILL = PatternFill(start_color="262626", end_color="262626", fill_type="solid")
+        HEADER_FONT = Font(name="Inter", bold=True, color="F5F5F5", size=11)
+        HEADER_ALIGNMENT = Alignment(horizontal="left", vertical="center")
+
+        ROW_FILL_EVEN = PatternFill(start_color="171717", end_color="171717", fill_type="solid")
+        ROW_FILL_ODD = PatternFill(start_color="1C1C1C", end_color="1C1C1C", fill_type="solid")
+        ROW_FONT = Font(name="Inter", color="E5E5E5", size=10)
+
+        SUCCESS_FILL = PatternFill(start_color="0A2E1A", end_color="0A2E1A", fill_type="solid")
+        SUCCESS_FONT = Font(name="Inter", color="6EE7B7", bold=True, size=10)
+
+        FAILED_FILL = PatternFill(start_color="2E0A0A", end_color="2E0A0A", fill_type="solid")
+        FAILED_FONT = Font(name="Inter", color="FDA5A5", bold=True, size=10)
+
+        MODE_OCR_FILL = PatternFill(start_color="1A1A3E", end_color="1A1A3E", fill_type="solid")
+        MODE_OCR_FONT = Font(name="Inter", color="A5B4FC", size=10)
+        MODE_PDF_FILL = PatternFill(start_color="1A2E1A", end_color="1A2E1A", fill_type="solid")
+        MODE_PDF_FONT = Font(name="Inter", color="6EE7B7", size=10)
+
+        THIN_BORDER = Border(
+            left=Side(style="thin", color="333333"),
+            right=Side(style="thin", color="333333"),
+            top=Side(style="thin", color="333333"),
+            bottom=Side(style="thin", color="333333"),
+        )
+
+        # ── 列配置 ──
+        columns = [
+            ("Drawing", 42),
+            ("Status", 16),
+            ("Mode", 18),
+            ("Revision", 12),
+            ("Processed At", 22),
         ]
-        w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
-        w.writeheader()
-        for row in rows:
-            w.writerow({k: row.get(k, "") or "" for k in fields})
-        return buf.getvalue()
+
+        # ── 写入表头 ──
+        for col_idx, (header, width) in enumerate(columns, 1):
+            cell = ws.cell(row=1, column=col_idx, value=header)
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
+            cell.alignment = HEADER_ALIGNMENT
+            cell.border = THIN_BORDER
+            ws.column_dimensions[chr(64 + col_idx)].width = width
+
+        ws.row_dimensions[1].height = 32
+
+        # ── 写入数据行 ──
+        for i, row in enumerate(rows):
+            excel_row = i + 2
+            drawing_no = (row.get("drawing_no") or "").strip()
+            filename = (row.get("filename") or "").strip()
+            drawing = f"{drawing_no}  ({filename})" if drawing_no and filename else (drawing_no or filename or "—")
+
+            raw_status = (row.get("status") or "").strip()
+            status_label = "Success" if raw_status == "success" else "Failed"
+
+            ocr = (row.get("ocr_flag") or "").strip()
+            mode_label = "VLM OCR" if ocr == "O" else "Vector PDF"
+
+            revision = row.get("revision") or "—"
+
+            raw_date = row.get("process_date") or ""
+            if raw_date:
+                try:
+                    dt = datetime.fromisoformat(raw_date)
+                    formatted_date = dt.strftime("%Y-%m-%d  %H:%M:%S")
+                except ValueError:
+                    formatted_date = raw_date
+            else:
+                formatted_date = "—"
+
+            row_fill = ROW_FILL_EVEN if i % 2 == 0 else ROW_FILL_ODD
+
+            # ── Drawing ──
+            c = ws.cell(row=excel_row, column=1, value=drawing)
+            c.font = ROW_FONT
+            c.fill = row_fill
+            c.alignment = Alignment(vertical="center")
+            c.border = THIN_BORDER
+
+            # ── Status ──
+            c = ws.cell(row=excel_row, column=2, value=status_label)
+            if raw_status == "success":
+                c.font = SUCCESS_FONT
+                c.fill = SUCCESS_FILL
+            else:
+                c.font = FAILED_FONT
+                c.fill = FAILED_FILL
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = THIN_BORDER
+
+            # ── Mode ──
+            c = ws.cell(row=excel_row, column=3, value=mode_label)
+            if ocr == "O":
+                c.font = MODE_OCR_FONT
+                c.fill = MODE_OCR_FILL
+            else:
+                c.font = MODE_PDF_FONT
+                c.fill = MODE_PDF_FILL
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = THIN_BORDER
+
+            # ── Revision ──
+            c = ws.cell(row=excel_row, column=4, value=revision)
+            c.font = ROW_FONT
+            c.fill = row_fill
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = THIN_BORDER
+
+            # ── Processed At ──
+            c = ws.cell(row=excel_row, column=5, value=formatted_date)
+            c.font = Font(name="Inter", color="A3A3A3", size=10)
+            c.fill = row_fill
+            c.alignment = Alignment(vertical="center")
+            c.border = THIN_BORDER
+
+            ws.row_dimensions[excel_row].height = 28
+
+        # ── 冻结首行 ──
+        ws.freeze_panes = "A2"
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        return buf.read()

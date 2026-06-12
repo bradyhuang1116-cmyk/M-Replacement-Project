@@ -117,7 +117,7 @@ export default function ProcessLogsPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "process_logs.csv";
+      a.download = "process_logs.xlsx";
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -236,7 +236,7 @@ export default function ProcessLogsPage() {
               className="ml-auto inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-blue-500/30 bg-blue-500/15 text-sm text-blue-300 hover:bg-blue-500/25 transition-colors"
             >
               <Download size={16} />
-              Export CSV
+              Export
             </button>
           </div>
         </section>

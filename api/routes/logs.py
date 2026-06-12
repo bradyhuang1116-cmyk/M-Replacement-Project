@@ -72,9 +72,12 @@ async def export_logs(
         limit=5000,
         offset=0,
     )
-    csv_text = ProcessLog.to_csv(items)
+    xlsx_bytes = ProcessLog.to_xlsx(items)
     return StreamingResponse(
-        io.BytesIO(csv_text.encode("utf-8-sig")),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=process_logs.csv"},
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=process_logs.xlsx",
+            "Content-Length": str(len(xlsx_bytes)),
+        },
     )
