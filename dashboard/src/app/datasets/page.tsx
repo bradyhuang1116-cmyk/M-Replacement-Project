@@ -104,6 +104,22 @@ export default function DatasetsPage() {
     );
   };
 
+  const allPrefixesSelected = selectedPrefixes.length === PREFIXES.length;
+
+  const toggleAllPrefixes = () => {
+    if (allPrefixesSelected) {
+      setSelectedPrefixes([]);
+    } else {
+      setSelectedPrefixes([...PREFIXES]);
+    }
+  };
+
+  const prefixToggleLabel = allPrefixesSelected
+    ? "Deselect All"
+    : selectedPrefixes.length === 0
+      ? "Select All"
+      : `Select All (${selectedPrefixes.length}/${PREFIXES.length})`;
+
   function formatSize(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
@@ -194,7 +210,7 @@ export default function DatasetsPage() {
             <label className="text-sm font-medium text-[rgb(212,212,212)] mb-3 block">
               Detection Prefixes
             </label>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               {PREFIXES.map((p) => (
                 <button
                   key={p}
@@ -208,6 +224,16 @@ export default function DatasetsPage() {
                   {p}
                 </button>
               ))}
+              <button
+                onClick={toggleAllPrefixes}
+                className={`h-8 px-3 rounded-lg text-xs font-medium transition-colors ${
+                  allPrefixesSelected
+                    ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                    : "bg-[rgb(38,38,38)] text-[rgb(163,163,163)] border border-[rgb(64,64,64)] hover:bg-[rgb(48,48,48)]"
+                }`}
+              >
+                {prefixToggleLabel}
+              </button>
             </div>
           </div>
 
