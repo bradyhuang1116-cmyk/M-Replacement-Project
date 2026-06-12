@@ -35,9 +35,9 @@ export default function FileTable({ files }: Props) {
   const pageFiles = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
-    <div className="bg-[rgb(23,23,23)] rounded-xl border border-[rgb(38,38,38)] overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-[rgb(38,38,38)]">
+    <div className="flex flex-col h-full bg-[rgb(23,23,23)] rounded-xl border border-[rgb(38,38,38)] overflow-hidden">
+      {/* Header bar — shrink-0 */}
+      <div className="shrink-0 flex items-center justify-between px-5 py-3 border-b border-[rgb(38,38,38)]">
         <div className="flex items-center gap-3">
           <h3 className="text-sm font-semibold text-[rgb(245,245,245)]">
             File Queue
@@ -64,10 +64,10 @@ export default function FileTable({ files }: Props) {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
+      {/* Scrollable table body — flex-1 min-h-0 overflow-auto */}
+      <div className="flex-1 min-h-0 overflow-auto">
         <table className="w-full text-sm">
-          <thead>
+          <thead className="sticky top-0 z-10 bg-[rgb(23,23,23)]">
             <tr className="border-b border-[rgb(38,38,38)] text-left">
               <th className="px-5 py-3 text-xs font-medium text-[rgb(115,115,115)] uppercase tracking-wider">
                 Filename
@@ -144,9 +144,9 @@ export default function FileTable({ files }: Props) {
         </table>
       </div>
 
-      {/* Pagination */}
+      {/* Pagination — shrink-0 */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-between px-5 py-3 border-t border-[rgb(38,38,38)]">
+        <div className="shrink-0 flex items-center justify-between px-5 py-3 border-t border-[rgb(38,38,38)]">
           <span className="text-xs text-[rgb(115,115,115)]">
             Page {page} of {totalPages}
           </span>

@@ -30,12 +30,15 @@ export default function DashboardPage() {
       <Sidebar />
 
       <div className="flex-1 flex overflow-hidden">
-        <main className="flex-1 overflow-y-auto p-6 space-y-5">
-          <h1 className="text-lg font-semibold text-[rgb(245,245,245)]">
+        <main className="flex-1 flex flex-col p-6 gap-5 overflow-hidden">
+          <h1 className="shrink-0 text-lg font-semibold text-[rgb(245,245,245)]">
             Dashboard
           </h1>
           <ReplacingCard job={job} onStart={handleStart} onStop={handleStop} />
-          <FileTable files={files} />
+          {/* FileTable fills remaining height */}
+          <div className="flex-1 min-h-0">
+            <FileTable files={files} />
+          </div>
         </main>
 
         <aside className="w-80 border-l border-[rgb(38,38,38)] overflow-y-auto p-4 space-y-4 shrink-0">
