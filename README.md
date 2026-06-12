@@ -56,6 +56,7 @@ cd dashboard && npm install && npm run dev
 | **[docs/v4_final_roadmap.md](docs/v4_final_roadmap.md)** | **权威方案**：NodexelOCR 自打镜像 + Nuitka 编译 + PLM Oracle 直连 |
 | **[docs/实现状态说明.md](docs/实现状态说明.md)** | 当前实现逻辑 + PLM 对接待办 + 未完成事项 |
 | [docs/region_detection_pipeline.md](docs/region_detection_pipeline.md) | 区域检测算法说明 |
+| [docs/区域检测详解.md](docs/区域检测详解.md) | 区域检测全流程：整体裁切 + 四框逻辑 + 底层函数细节 |
 | [dashboard/README.md](dashboard/README.md) | Next.js 前端说明 |
 | [manual_editor/README.md](manual_editor/README.md) | PySide6 桌面工具说明 |
 
