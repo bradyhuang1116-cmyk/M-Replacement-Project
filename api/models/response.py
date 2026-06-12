@@ -18,3 +18,10 @@ class TaskResponse(BaseModel):
     task_id: str
     status: str
     message: Optional[str] = None
+
+class PlmProcessResponse(BaseModel):
+    status: str
+    method: str
+    total: int
+    file_path: str
+    error: Optional[str] = None
