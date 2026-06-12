@@ -155,7 +155,7 @@ export default function SettingsPage() {
             <h1 className="text-lg font-semibold text-[rgb(245,245,245)] shrink-0">Settings</h1>
 
             {/* Success banner with optional restart */}
-            {successMsg && (
+            {/* {successMsg && (
               <div className="shrink-0 flex items-center justify-between px-4 py-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm">
                 <div className="flex items-center gap-2">
                   <CheckCircle size={16} />
@@ -170,7 +170,7 @@ export default function SettingsPage() {
                   {restarting ? "Restarting..." : "Restart Now"}
                 </button>
               </div>
-            )}
+            )} */}
 
             {error && (
               <div className="shrink-0 flex items-center gap-2 px-4 py-3 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-sm">
