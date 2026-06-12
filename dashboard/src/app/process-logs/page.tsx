@@ -132,8 +132,9 @@ export default function ProcessLogsPage() {
     <div className="flex h-screen bg-[rgb(10,10,10)]">
       <Sidebar />
 
-      <main className="flex-1 overflow-y-auto p-6 space-y-5">
-        <div className="flex items-start justify-between gap-4">
+      <main className="flex-1 flex flex-col p-6 gap-5 overflow-hidden">
+        {/* Page header — shrink-0 so it never compresses */}
+        <div className="shrink-0 flex items-start justify-between gap-4">
           <div>
             <h1 className="text-lg font-semibold text-[rgb(245,245,245)]">Process Logs</h1>
             <p className="mt-1 text-sm text-[rgb(163,163,163)]">
@@ -142,13 +143,15 @@ export default function ProcessLogsPage() {
           </div>
         </div>
 
+        {/* Error banner — shrink-0 */}
         {error && (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+          <div className="shrink-0 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
             {error}
           </div>
         )}
 
-        <section className="rounded-2xl border border-[rgb(38,38,38)] bg-[rgb(23,23,23)] p-5 space-y-4">
+        {/* Filters section — shrink-0 */}
+        <section className="shrink-0 rounded-2xl border border-[rgb(38,38,38)] bg-[rgb(23,23,23)] p-5 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-4">
             <input
               value={filters.drawing_no}
@@ -238,8 +241,10 @@ export default function ProcessLogsPage() {
           </div>
         </section>
 
-        <section className="rounded-2xl border border-[rgb(38,38,38)] bg-[rgb(23,23,23)] overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3 border-b border-[rgb(38,38,38)]">
+        {/* Table section — flex-1 fills remaining height, min-h-0 prevents overflow */}
+        <section className="flex-1 min-h-0 flex flex-col rounded-2xl border border-[rgb(38,38,38)] bg-[rgb(23,23,23)] overflow-hidden">
+          {/* Table header bar — shrink-0 */}
+          <div className="shrink-0 flex items-center justify-between px-5 py-3 border-b border-[rgb(38,38,38)]">
             <div className="flex items-center gap-3">
               <h2 className="text-sm font-semibold text-[rgb(245,245,245)]">Log Records</h2>
               {!loading && (
@@ -271,9 +276,10 @@ export default function ProcessLogsPage() {
             )}
           </div>
 
-          <div className="overflow-x-auto">
+          {/* Scrollable table body — flex-1 with its own y-axis scroll */}
+          <div className="flex-1 min-h-0 overflow-auto">
             <table className="w-full text-sm">
-              <thead>
+              <thead className="sticky top-0 z-10 bg-[rgb(23,23,23)]">
                 <tr className="border-b border-[rgb(38,38,38)] text-left">
                   <th className="px-5 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Drawing</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Status</th>

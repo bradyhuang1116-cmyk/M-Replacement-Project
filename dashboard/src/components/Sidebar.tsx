@@ -53,14 +53,14 @@ export default function Sidebar() {
       <aside className="flex flex-col w-60 bg-[rgb(23,23,23)] border-r border-[rgb(38,38,38)] h-full">
         {/* Logo */}
         <div className="flex items-center gap-3 px-5 py-5">
-          <Image
-            src="/logo.png"
-            alt="Logo"
-            width={32}
-            height={32}
-            className="rounded-lg"
-            style={{ width: "auto", height: "auto" }}
-          />
+          {/*<Image*/}
+          {/*  src="/logo.png"*/}
+          {/*  alt="Logo"*/}
+          {/*  width={32}*/}
+          {/*  height={32}*/}
+          {/*  className="rounded-lg"*/}
+          {/*  style={{ width: "auto", height: "auto" }}*/}
+          {/*/>*/}
           <div className="leading-tight">
             <span className="text-[rgb(245,245,245)] font-bold text-sm tracking-wide">
               Blueprint
