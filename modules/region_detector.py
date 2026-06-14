@@ -23,7 +23,58 @@ _v5_cache: dict = {}
 _v5_lock = _threading.Lock()
 
 
+class _V5CloudEngine:
+    """PP-OCRv5 云端同步 OCR 引擎，predict() 返回与本地 PaddleOCR 一致的结构。"""
+
+    def __init__(self, api_url: str, token: str):
+        self._url = api_url
+        self._token = token
+
+    def predict(self, image):
+        import base64 as _b64, io as _io, requests as _rq
+        from PIL import Image as _PILImage
+        # image 为 numpy RGB；转 PNG base64
+        if isinstance(image, np.ndarray):
+            pil = _PILImage.fromarray(image)
+        else:
+            pil = image
+        buf = _io.BytesIO()
+        pil.save(buf, format="PNG")
+        b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+        payload = {
+            "file": b64, "fileType": 1,
+            "useDocOrientationClassify": False,
+            "useDocUnwarping": False,
+            "useTextlineOrientation": False,
+        }
+        headers = {"Authorization": f"token {self._token}",
+                   "Content-Type": "application/json"}
+        resp = _rq.post(self._url, json=payload, headers=headers, timeout=120)
+        resp.raise_for_status()
+        ocr_results = (resp.json().get("result") or {}).get("ocrResults") or []
+        out = []
+        for res in ocr_results:
+            pr = res.get("prunedResult") or {}
+            out.append({
+                "dt_polys": pr.get("dt_polys", []),
+                "rec_texts": pr.get("rec_texts", []),
+                "rec_scores": pr.get("rec_scores", []),
+            })
+        return out
+
+
+_v5_cloud_engine = None
+
+
 def _get_ocr_v5(lang: str = "en"):
+    # 云端模式：红框 v5 走 PP-OCRv5 同步云端 API（结构与本地一致）
+    from config import VLM_PROVIDER
+    if VLM_PROVIDER == "paddleocr_api":
+        global _v5_cloud_engine
+        if _v5_cloud_engine is None:
+            from config import PADDLEOCR_V5_API_URL, PADDLEOCR_API_TOKEN
+            _v5_cloud_engine = _V5CloudEngine(PADDLEOCR_V5_API_URL, PADDLEOCR_API_TOKEN)
+        return _v5_cloud_engine
     with _v5_lock:
         if lang not in _v5_cache:
             from paddleocr import PaddleOCR
@@ -2762,6 +2813,40 @@ def _auto_rotate_portrait(image: np.ndarray, prefixes: list[str] = None) -> tupl
 #  工厂注意部分（Factory Note）检测
 # ══════════════════════════════════════════════════════════════════
 
+
+
+def _layout_blocks_via_cloud(image_pil):
+    """云端模式：调 VL layout-parsing API，取版面块（DocLayoutV3 是 VL 核心组件，
+    其 layout_det_res 即版面检测结果）。返回 [{x1,y1,x2,y2,label,score}]。"""
+    import base64 as _b64, io as _io, requests as _rq
+    from config import PADDLEOCR_API_URL, PADDLEOCR_API_TOKEN
+    buf = _io.BytesIO()
+    image_pil.save(buf, format="PNG")
+    b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+    resp = _rq.post(
+        PADDLEOCR_API_URL,
+        json={"file": b64, "fileType": 1, "useLayoutDetection": True,
+              "useDocUnwarping": False, "useDocOrientationClassify": False},
+        headers={"Authorization": f"token {PADDLEOCR_API_TOKEN}",
+                 "Content-Type": "application/json"},
+        timeout=180,
+    )
+    resp.raise_for_status()
+    lpr = ((resp.json().get("result") or {}).get("layoutParsingResults") or [])
+    blocks = []
+    if lpr:
+        det = (lpr[0].get("prunedResult") or {}).get("layout_det_res") or {}
+        for item in det.get("boxes", []):
+            c = item.get("coordinate")
+            if not c:
+                continue
+            blocks.append({
+                "x1": int(c[0]), "y1": int(c[1]), "x2": int(c[2]), "y2": int(c[3]),
+                "label": item.get("label", ""), "score": float(item.get("score", 0)),
+            })
+    return blocks
+
+
 _layout_model = None
 
 
@@ -2774,28 +2859,24 @@ def _get_layout_model():
 
 
 def _detect_factory_note_candidates(image_pil, exclude_bboxes):
-    """用 PP-DocLayoutV3 检测布局块，排除红/绿/橙框区域，返回工厂注意候选区域。"""
+    """检测布局块，排除红/绿/橙框区域，返回工厂注意候选区域。
+    云端模式走 VL layout-parsing API，否则用本地 PP-DocLayoutV3。"""
     from PIL import Image
     img_w, img_h = image_pil.size
 
-    model = _get_layout_model()
-    result = list(model.predict(np.array(image_pil), batch_size=1))
-    if not result:
-        return []
-
-    res = result[0]
-    all_blocks = []
-    if hasattr(res, "boxes"):
-        for item in res.boxes:
-            coord = item["coordinate"]
-            all_blocks.append({
-                "x1": int(coord[0]), "y1": int(coord[1]),
-                "x2": int(coord[2]), "y2": int(coord[3]),
-                "label": item.get("label", ""),
-                "score": float(item.get("score", 0)),
-            })
-    elif isinstance(res, dict) and "boxes" in res:
-        for item in res["boxes"]:
+    from config import VLM_PROVIDER
+    if VLM_PROVIDER == "paddleocr_api":
+        all_blocks = _layout_blocks_via_cloud(image_pil)
+    else:
+        model = _get_layout_model()
+        result = list(model.predict(np.array(image_pil), batch_size=1))
+        if not result:
+            return []
+        res = result[0]
+        all_blocks = []
+        items = res.boxes if hasattr(res, "boxes") else (
+            res["boxes"] if isinstance(res, dict) and "boxes" in res else [])
+        for item in items:
             coord = item["coordinate"]
             all_blocks.append({
                 "x1": int(coord[0]), "y1": int(coord[1]),
@@ -2804,7 +2885,7 @@ def _detect_factory_note_candidates(image_pil, exclude_bboxes):
                 "score": float(item.get("score", 0)),
             })
 
-    logger.info(f"Factory Note: PP-DocLayoutV3 检测到 {len(all_blocks)} 个布局块")
+    logger.info(f"Factory Note: 检测到 {len(all_blocks)} 个布局块")
 
     candidates = []
     for blk in all_blocks:
@@ -3043,7 +3124,7 @@ def detect_all_regions(
             logger.info(f"  {name}: 未检测到")
 
     # ── Phase C: 工厂注意部分检测 ──
-    # 主路径：纯像素 V6（V5 粗扫 → VLM 精定位）；失败回退到 PP-DocLayoutV3。
+    # 主路径：纯像素 V6（V5 粗扫 → VLM 精定位）；失败回退到云端版面检测。
     logger.info("Phase C: 工厂注意部分检测 ...")
     fn_codes: list = []
     fn_source = "v6"
@@ -3051,8 +3132,8 @@ def detect_all_regions(
         from modules.factory_note_pixel import detect_factory_note_codes_v6
         fn_codes = detect_factory_note_codes_v6(image, result, prefixes=prefixes)
     except Exception as e:
-        logger.warning(f"Factory Note v6 失败，回退 PP-DocLayoutV3: {e}", exc_info=True)
-        fn_source = "pp_doclayout_v3"
+        logger.warning(f"Factory Note v6 失败，回退云端版面检测: {e}", exc_info=True)
+        fn_source = "layout_fallback"
         from PIL import Image as PILImage
         image_pil = PILImage.fromarray(image)
         exclude_bboxes = []
@@ -3066,7 +3147,7 @@ def detect_all_regions(
             metadata["factory_note_candidates"] = fn_candidates
             metadata["factory_note_candidate_count"] = len(fn_candidates)
         except Exception as e2:
-            logger.warning(f"Factory Note PP-DocLayoutV3 fallback 也失败: {e2}")
+            logger.warning(f"Factory Note 云端版面检测 fallback 也失败: {e2}")
             fn_codes = []
 
     result["factory_note_codes"] = fn_codes

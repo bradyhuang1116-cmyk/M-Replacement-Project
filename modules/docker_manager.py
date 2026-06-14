@@ -11,10 +11,10 @@ from config import (
     DOCKER_CONTAINER_NAME,
     DOCKER_CONTAINER_PORT,
     DOCKER_IMAGE as _CFG_DOCKER_IMAGE,
-    PADDLEOCR_API_TOKEN,
-    PADDLEOCR_API_URL,
-    VLM_PROVIDER,
 )
+# 注意：VLM_PROVIDER / PADDLEOCR_API_* 在运行时可被模式开关切换，
+# 必须动态读 config.X（不能 import 时取快照，否则切模式后不生效）。
+import config as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def is_container_running() -> bool:
 
 
 def _vlm_health_check() -> bool:
-    if VLM_PROVIDER == "paddleocr_api":
+    if _cfg.VLM_PROVIDER == "paddleocr_api":
         return True
     try:
         resp = requests.get(
@@ -127,13 +127,13 @@ def stop_vllm_container() -> tuple[bool, str]:
 
 
 def ensure_vlm_ready() -> tuple[bool, str]:
-    if VLM_PROVIDER == "paddleocr_api":
-        if not PADDLEOCR_API_TOKEN:
+    if _cfg.VLM_PROVIDER == "paddleocr_api":
+        if not _cfg.PADDLEOCR_API_TOKEN:
             return False, (
                 "VLM_PROVIDER=paddleocr_api 但 PADDLEOCR_API_TOKEN 未配置；"
                 "请复制 .env.example 为 .env 并填写 token"
             )
-        return True, f"VLM 服务: PaddleOCR 托管 API ({PADDLEOCR_API_URL})"
+        return True, f"VLM 服务: PaddleOCR 托管 API ({_cfg.PADDLEOCR_API_URL})"
     if _vlm_health_check():
         return True, "VLM 服务: 运行中"
 

@@ -33,6 +33,11 @@ PADDLEOCR_API_URL = os.getenv(
     "https://ebi011tbsdc4t6yc.aistudio-app.com/layout-parsing",
 )
 PADDLEOCR_API_TOKEN = os.getenv("PADDLEOCR_API_TOKEN", "")
+# 红框结构定位用的 PP-OCRv5 同步 OCR 端点（paddleocr_api 模式下生效）
+PADDLEOCR_V5_API_URL = os.getenv(
+    "PADDLEOCR_V5_API_URL",
+    "https://q7l0za01v4ycbbl6.aistudio-app.com/ocr",
+)
 
 # ── Docker 容器配置（NodexelOCR 自打镜像，模型已封装在镜像内，零挂载启动）──
 DOCKER_CONTAINER_NAME = os.getenv("DOCKER_CONTAINER_NAME", "nodexel")

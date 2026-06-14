@@ -187,11 +187,31 @@ def _localize_y_box(crop_np, poly, target_tok):
                        if re_ > left_col and rs < right_col]
         if not overlapping:
             return left_col, right_col
-        new_left = min(rs for rs, _ in overlapping)
-        new_right = max(re_ for _, re_ in overlapping)
         char_w = max(8, (right_col - left_col) // 12)
-        new_left = max(new_left, left_col - char_w)
-        new_right = min(new_right, right_col + char_w)
+        import config as _cfg
+        if _cfg.VLM_PROVIDER != "paddleocr_api":
+            # 本地模式：保持原逻辑（取所有重叠笔画 min/max + 外扩一个字宽），
+            # 本地框本就紧凑，不做云端那套聚类收紧
+            new_left = min(rs for rs, _ in overlapping)
+            new_right = max(re_ for _, re_ in overlapping)
+            new_left = max(new_left, left_col - char_w)
+            new_right = min(new_right, right_col + char_w)
+            return new_left, new_right
+        # 云端模式：按字间隙聚类，只保留覆盖范围最大的连续簇，
+        # 剔除两端孤立的相邻字符/标点笔画，避免框过宽
+        overlapping.sort()
+        gap_thresh = max(int(char_w * 1.2), 14)
+        clusters = [[overlapping[0]]]
+        for rs, re_ in overlapping[1:]:
+            if rs - clusters[-1][-1][1] > gap_thresh:
+                clusters.append([(rs, re_)])
+            else:
+                clusters[-1].append((rs, re_))
+        best = max(clusters, key=lambda cl: cl[-1][1] - cl[0][0])
+        new_left = min(rs for rs, _ in best)
+        new_right = max(re_ for _, re_ in best)
+        new_left = max(new_left, left_col)
+        new_right = min(new_right, right_col)
         return new_left, new_right
 
     def _run_for_tok(tok_up: str):
