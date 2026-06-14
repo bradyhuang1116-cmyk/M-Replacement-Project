@@ -27,16 +27,44 @@ mkdir "%OUT%\docs" 2>nul
 mkdir "%OUT%\offline" 2>nul
 mkdir "%OUT%\runtime\node" 2>nul
 
-echo [1/6] 复制 .pyd ...
+echo [1/6] 复制 .pyd（build\nuitka\*.cp310-win_amd64.pyd → app\modules\*.pyd）...
+set "PYD_ERR=0"
 copy /Y "build\nuitka\config.cp310-win_amd64.pyd" "%OUT%\app\config.pyd" >nul
+if errorlevel 1 set "PYD_ERR=1"
 for %%f in (modules\*.py) do (
     if /I not "%%~nf"=="__init__" (
-        copy /Y "build\nuitka\%%~nf.cp310-win_amd64.pyd" "%OUT%\app\modules\%%~nf.pyd" >nul
+        if not exist "build\nuitka\%%~nf.cp310-win_amd64.pyd" (
+            echo   [错误] 缺少编译产物: build\nuitka\%%~nf.cp310-win_amd64.pyd
+            set "PYD_ERR=1"
+        ) else (
+            copy /Y "build\nuitka\%%~nf.cp310-win_amd64.pyd" "%OUT%\app\modules\%%~nf.pyd" >nul
+            if errorlevel 1 (
+                echo   [错误] 复制失败: %%~nf.pyd
+                set "PYD_ERR=1"
+            )
+        )
     )
 )
 copy /Y "modules\__init__.py" "%OUT%\app\modules\" >nul
+if "%PYD_ERR%"=="1" (
+    echo.
+    echo [错误] .pyd 复制不完整。请先运行 scripts\compile_core.bat ^(Python 3.10^)
+    pause & exit /b 1
+)
+echo   已复制 app\config.pyd 与 app\modules\ 下 16 个 .pyd
+echo   关键文件（请核对大小，job_queue 新版约 474112 字节）:
+for %%p in (job_queue worker) do (
+    if exist "%OUT%\app\modules\%%p.pyd" (
+        for %%s in ("%OUT%\app\modules\%%p.pyd") do echo     %%p.pyd  %%~zs 字节
+    ) else (
+        echo     [缺失] %%p.pyd
+        set "PYD_ERR=1"
+    )
+)
+if "%PYD_ERR%"=="1" pause & exit /b 1
 
 echo [2/6] 复制后端应用 ...
+if exist "%OUT%\app\api\api" rmdir /S /Q "%OUT%\app\api\api" 2>nul
 xcopy "api" "%OUT%\app\api\" /E /I /Y /Q >nul
 xcopy "fonts" "%OUT%\app\fonts\" /E /I /Y /Q >nul
 if exist "app_config" xcopy "app_config" "%OUT%\app\app_config\" /E /I /Y /Q >nul
@@ -73,6 +101,12 @@ if exist "docs\部署手册_云端API模式.md" copy /Y "docs\部署手册_云�
 if exist "docs\打包加密操作手册.md" copy /Y "docs\打包加密操作手册.md" "%OUT%\docs\" >nul
 
 echo [6/6] 完成
+echo.
+echo 交付包内 .pyd 路径（不在 Git 仓库内，PyCharm 默认搜不到）:
+echo   %OUT%\app\config.pyd
+echo   %OUT%\app\modules\job_queue.pyd
+echo   %OUT%\app\modules\worker.pyd
+echo   ^(编译中间产物名: build\nuitka\job_queue.cp310-win_amd64.pyd^)
 echo.
 echo 还需手动:
 echo   - scripts\build_dashboard.bat（若 frontend 缺失）
