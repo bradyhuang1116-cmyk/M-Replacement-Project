@@ -21,6 +21,7 @@ import threading as _threading
 
 _v5_cache: dict = {}
 _v5_lock = _threading.Lock()
+_v5_cloud_gate = _threading.Semaphore(1)
 
 
 class _V5CloudEngine:
@@ -31,7 +32,7 @@ class _V5CloudEngine:
         self._token = token
 
     def predict(self, image):
-        import base64 as _b64, io as _io, requests as _rq
+        import base64 as _b64, io as _io, time as _time, requests as _rq
         from PIL import Image as _PILImage
         # image 为 numpy RGB；转 PNG base64
         if isinstance(image, np.ndarray):
@@ -49,8 +50,65 @@ class _V5CloudEngine:
         }
         headers = {"Authorization": f"token {self._token}",
                    "Content-Type": "application/json"}
-        resp = _rq.post(self._url, json=payload, headers=headers, timeout=120)
-        resp.raise_for_status()
+        last_error = None
+        resp = None
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            try:
+                with _v5_cloud_gate:
+                    resp = _rq.post(self._url, json=payload, headers=headers, timeout=120)
+
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            wait_seconds = max(float(retry_after), 0.5)
+                        except ValueError:
+                            wait_seconds = float(2 ** attempt)
+                    else:
+                        wait_seconds = float(2 ** attempt)
+                    last_error = f"HTTP {resp.status_code}"
+                    if attempt < max_attempts - 1:
+                        logger.warning(
+                            "PP-OCRv5 云端接口限流或服务繁忙，%.1f 秒后重试（%s/%s）",
+                            wait_seconds,
+                            attempt + 1,
+                            max_attempts,
+                        )
+                        _time.sleep(wait_seconds)
+                        continue
+                    resp.raise_for_status()
+
+                resp.raise_for_status()
+                break
+            except _rq.RequestException as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                last_error = str(exc)
+                retriable = status_code == 429 or (status_code is not None and status_code >= 500)
+                if retriable and attempt < max_attempts - 1:
+                    retry_after = None
+                    if getattr(exc, "response", None) is not None:
+                        retry_after = exc.response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            wait_seconds = max(float(retry_after), 0.5)
+                        except ValueError:
+                            wait_seconds = float(2 ** attempt)
+                    else:
+                        wait_seconds = float(2 ** attempt)
+                    logger.warning(
+                        "PP-OCRv5 云端请求失败，%.1f 秒后重试（%s/%s）：%s",
+                        wait_seconds,
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
+                    _time.sleep(wait_seconds)
+                    continue
+                raise RuntimeError(f"PP-OCRv5 云端 OCR 请求失败：{exc}") from exc
+        else:
+            raise RuntimeError(f"PP-OCRv5 云端 OCR 请求失败：{last_error or '未知错误'}")
+
         ocr_results = (resp.json().get("result") or {}).get("ocrResults") or []
         out = []
         for res in ocr_results:

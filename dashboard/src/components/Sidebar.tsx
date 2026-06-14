@@ -3,12 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Database, ScrollText, Settings, Power, RotateCcw } from "lucide-react";
+import { LayoutDashboard, Database, ScrollText, ListOrdered, Settings, Power, RotateCcw } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Datasets", href: "/datasets", icon: Database },
+  { name: "API Queue", href: "/api-queue", icon: ListOrdered },
   { name: "Process Logs", href: "/process-logs", icon: ScrollText },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
