@@ -23,7 +23,7 @@ from config import PROCESS_LOG_DB_PATH
 # 便于测试期直接打开查看 O/N 等记录。
 # 【测试完毕改回】：把下面 _WRITE_CSV_LOG 设为 False（或删除 _append_csv 调用），
 # 生产以 SQLite 表 process_log 为准、供 PLM 读取，无需 CSV。
-_WRITE_CSV_LOG = True
+_WRITE_CSV_LOG = False
 _CSV_LOG_PATH = os.path.join(os.path.dirname(PROCESS_LOG_DB_PATH), "process_log.csv")
 
 _SCHEMA = """

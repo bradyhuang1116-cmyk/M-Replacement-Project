@@ -13,7 +13,7 @@ cd "$ROOT"
 
 OUT="NodexelOCR_Delivery"
 IMAGE="nodexelocr:v1"
-PY="C:/Users/Brady Huang/miniconda3/envs/mitsubishi/python.exe"
+PY="C:/Users/Administrator/miniconda3/envs/mitsubishi/python.exe"
 
 echo "=================================================="
 echo " 交付包输出: $ROOT/$OUT"
@@ -63,9 +63,10 @@ if [ -f build_tools/dist/ManualEditor.exe ]; then
 else
     echo "  ⚠️ build_tools/dist/ManualEditor.exe 不存在，先打包：python -m PyInstaller build_tools/manual_editor.spec"
 fi
-if [ -d "dashboard/node_modules" ]; then
-    cp -r dashboard "$OUT/app/" && rm -rf "$OUT/app/dashboard/.next"
-fi
+cp -r frontend "$OUT/" 2>/dev/null || echo "  ⚠️ frontend/ 不存在，请先运行 scripts/build_dashboard.bat"
+for f in scripts/deploy/*.bat; do
+  [ -f "$f" ] && cp "$f" "$OUT/"
+done
 rm -rf "$OUT/app/modules/__pycache__" "$OUT/app/api/__pycache__"
 echo "  → app/（modules+config 为 .pyd）"
 
@@ -89,7 +90,16 @@ server.ip=10.237.126.127
 PROP
 [ -f scripts/nssm.exe ] && cp scripts/nssm.exe "$OUT/offline/" || echo "  ⚠️ scripts/nssm.exe 不存在，请手动放入 offline/"
 cp scripts/install_service.bat "$OUT/" 2>/dev/null || true
-# 交付文档单独编写后放入 $OUT/docs/（内部设计文档不进交付包）
+cp scripts/install_service_云端API.bat "$OUT/" 2>/dev/null || true
+cp scripts/install_service_本地GPU.bat "$OUT/" 2>/dev/null || true
+cp scripts/_install_service_core.bat "$OUT/" 2>/dev/null || true
+cp scripts/离线安装.bat "$OUT/" 2>/dev/null || true
+cp scripts/compile_core.bat "$OUT/" 2>/dev/null || true
+cp scripts/assemble_delivery.bat "$OUT/" 2>/dev/null || true
+for _doc in docs/部署手册.md docs/部署手册_本地GPU模式.md docs/部署手册_云端API模式.md; do
+  [ -f "$_doc" ] && cp "$_doc" "$OUT/docs/" || echo "  ⚠️ $_doc 不存在"
+done
+[ -f docs/打包加密操作手册.md ] && cp docs/打包加密操作手册.md "$OUT/docs/" || true
 
 echo ""
 echo "=================================================="

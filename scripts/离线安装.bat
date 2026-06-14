@@ -38,7 +38,7 @@ echo [3/3] 后续手动步骤：
 echo   1. 复制 config\.env.example 为 app\.env，填 Oracle 连接 / D:\SMEC 归档路径
 echo   2. 复制 config\server.properties.example 为 app\config\server.properties，填本机 IP
 echo   3. 起推理容器：docker run -d --gpus all -p 8080:8080 --name nodexel nodexelocr:v1
-echo   4. 注册应用服务：管理员运行 install_service.bat
+echo   4. 注册应用服务：管理员运行 install_service_本地GPU.bat
 echo   5. 健康检查：http://localhost:8000/api/v1/health
 
 echo.

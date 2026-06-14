@@ -13,7 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-PY="C:/Users/Brady Huang/miniconda3/envs/mitsubishi/python.exe"
+PY="C:/Users/Administrator/miniconda3/envs/mitsubishi/python.exe"
 OUT="build/nuitka"
 
 # modules/ 下全部（除 __init__）+ config

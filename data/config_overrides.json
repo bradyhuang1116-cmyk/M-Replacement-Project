@@ -3,7 +3,23 @@
   "ORACLE_USER": "system",
   "ORACLE_PASSWORD": "Oracle_2024",
   "ORACLE_SERVICE_NAME": "dbg13",
-  "WINSCP_ENABLED": "true"
+  "WINSCP_ENABLED": "true",
+  "WINSCP_EXE_PATH": "D:\\day\\public\\tuzhi\\WinSCP-6.5.6-Automation\\WinSCP.exe",
+  "WORKER_MAX_RETRY": 1,
+  "WATCH_STABILITY_SECONDS": 3.5,
+  "WATCH_INBOX_DIR": "D:\\day\\public\\tuzhi\\postMan\\input",
+  "WATCH_OUTPUT_DIR": "D:\\day",
+  "WATCH_FAILED_DIR": "",
+  "ORACLE_CLIENT_LIB_DIR": "D:\\day\\public\\oracle-con-plugin\\instantclient-basic-windows.x64-23.26.2.0.0\\instantclient_23_0",
+  "ORACLE_SID": "",
+  "ORACLE_THICK_MODE": true,
+  "DEFAULT_PREFIXES": [
+    "Y",
+    "X",
+    "B",
+    "H",
+    "G",
+    "F",
+    "E"
+  ]
 }
-
-
