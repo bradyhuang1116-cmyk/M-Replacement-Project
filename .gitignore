@@ -22,7 +22,7 @@ test_output/
 nul
 temp_*.tif
 logs/
-NodexelOCR_Delivery
+
 
 # 持久化数据（§12 Phase 2+）：保留 data/ 目录，忽略其中的 SQLite DB 与产物
 data/*.db
