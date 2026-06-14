@@ -162,7 +162,7 @@ def plm_process_drawing(file_path: str, output_dir: str) -> dict:
             local_input_path,
             output_dir_local,
             generate_debug=False,
-            prefixes=DEFAULT_PREFIXES,
+            prefixes=list(DEFAULT_PREFIXES),
         )
     except Exception as e:
         logger.error("图纸处理失败: %s", e, exc_info=True)

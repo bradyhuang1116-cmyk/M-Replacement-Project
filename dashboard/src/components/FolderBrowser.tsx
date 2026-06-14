@@ -98,7 +98,7 @@ export default function FolderBrowser({ isOpen, onClose, onSelect, title, initia
           <div className="flex items-center gap-2">
             {current && (
               <button
-                onClick={() => browse(parent)}
+                onClick={() => browse(parent || "")}
                 title="Parent folder"
                 className="shrink-0 p-1.5 rounded hover:bg-[rgb(38,38,38)] text-[rgb(163,163,163)] transition-colors"
               >

@@ -13,6 +13,22 @@ class BrowseRequest(BaseModel):
     path: str = ""
 
 
+def _is_drive_root(path: str) -> bool:
+    """Windows 盘符根目录，如 D:\\ 或 D:。"""
+    norm = path.rstrip("\\/")
+    return len(norm) == 2 and norm[1] == ":"
+
+
+def _parent_dir(path: str) -> str:
+    """上一级目录；盘符根目录的上一级为盘符列表（空路径）。"""
+    if _is_drive_root(path):
+        return ""
+    parent = os.path.dirname(path)
+    if parent == path:
+        return ""
+    return parent
+
+
 @router.post("/folders/browse")
 async def browse_folder(req: BrowseRequest):
     path = req.path.strip()
@@ -26,7 +42,7 @@ async def browse_folder(req: BrowseRequest):
 
     path = os.path.abspath(path)
     if not os.path.isdir(path):
-        return {"current": path, "parent": os.path.dirname(path), "dirs": [], "error": "Not a directory"}
+        return {"current": path, "parent": _parent_dir(path), "dirs": [], "error": "Not a directory"}
 
     dirs = []
     try:
@@ -39,7 +55,7 @@ async def browse_folder(req: BrowseRequest):
 
     return {
         "current": path,
-        "parent": os.path.dirname(path),
+        "parent": _parent_dir(path),
         "dirs": dirs,
     }
 

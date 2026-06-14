@@ -5,7 +5,7 @@ import type { ConfigFieldMeta } from "@/types";
 import Sidebar from "@/components/Sidebar";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useConfig } from "@/hooks/useConfig";
-import { Save, CheckCircle, AlertCircle, Cog, HardDrive, Database, RotateCcw, AlertTriangle, Server } from "lucide-react";
+import { Save, AlertCircle, Cog, HardDrive, Database, AlertTriangle, Server } from "lucide-react";
 
 const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   Cog,
@@ -16,9 +16,28 @@ const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
 
 // ── inline validation helpers ──
 
-function validateField(key: string, meta: { type: string; label: string; max_length?: number }, value: unknown): string {
+function normalizeMultiSelectValue(value: unknown, options: string[]): string[] {
+  if (!Array.isArray(value)) return [];
+  const allowed = new Set(options);
+  return value
+    .map((item) => String(item).trim().toUpperCase())
+    .filter((item): item is string => item.length > 0 && allowed.has(item));
+}
+
+function validateField(
+  key: string,
+  meta: { type: string; label: string; max_length?: number; options?: string[] },
+  value: unknown,
+): string {
   if (value === "" || value === null || value === undefined) return "";
   const keyLower = key.toLowerCase();
+
+  if (meta.type === "multi_select") {
+    const options = meta.options ?? [];
+    const selected = normalizeMultiSelectValue(value, options);
+    if (selected.length === 0) return "Select at least one prefix";
+    return "";
+  }
 
   // Port range validation
   if (keyLower.includes("port") && meta.type === "number") {
@@ -112,7 +131,7 @@ function buildOracleOverrides(
 }
 
 export default function SettingsPage() {
-  const { config, loading, saving, error, successMsg, saveConfig, reload } = useConfig();
+  const { config, loading, saving, error, saveConfig, reload } = useConfig();
   const [dirtyValues, setDirtyValues] = useState<Record<string, unknown>>({});
   const [hasChanges, setHasChanges] = useState(false);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
@@ -144,6 +163,10 @@ export default function SettingsPage() {
   function getEffectiveValue(key: string): unknown {
     if (key in dirtyValues) return dirtyValues[key];
     return config?.current[key] ?? "";
+  }
+
+  function getMultiSelectValue(key: string, options: string[]): string[] {
+    return normalizeMultiSelectValue(getEffectiveValue(key), options);
   }
 
   // Re-validate all dirty fields whenever config or dirty values change
@@ -218,19 +241,6 @@ export default function SettingsPage() {
       // error handled by hook
     }
   };
-
-  const handleRestart = useCallback(async () => {
-    setRestarting(true);
-    try {
-      await fetch("http://localhost:8000/api/v1/system/restart", { method: "POST" });
-    } catch {
-      // Expected: backend exits before response completes
-    }
-    setTimeout(() => {
-      setRestarting(false);
-      window.location.reload();
-    }, 5000);
-  }, []);
 
   const categories = useMemo(() => {
     if (!config) return [];
@@ -373,6 +383,52 @@ export default function SettingsPage() {
                                           : "border-[rgb(64,64,64)] focus:border-[rgb(82,82,82)]"
                                       }`}
                                     />
+                                  ) : meta.type === "multi_select" ? (
+                                    (() => {
+                                      const options = meta.options ?? [];
+                                      const selected = getMultiSelectValue(key, options);
+                                      const allSelected = options.length > 0 && selected.length === options.length;
+                                      const toggleLabel = allSelected
+                                        ? "Deselect All"
+                                        : selected.length === 0
+                                          ? "Select All"
+                                          : `Select All (${selected.length}/${options.length})`;
+
+                                      return (
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                          {options.map((option) => (
+                                            <button
+                                              key={option}
+                                              type="button"
+                                              onClick={() => {
+                                                const next = selected.includes(option)
+                                                  ? selected.filter((item) => item !== option)
+                                                  : [...selected, option];
+                                                handleFieldChange(key, next);
+                                              }}
+                                              className={`w-8 h-8 rounded-lg text-xs font-medium transition-colors ${
+                                                selected.includes(option)
+                                                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                                                  : "bg-[rgb(38,38,38)] text-[rgb(115,115,115)] border border-[rgb(64,64,64)] hover:bg-[rgb(48,48,48)]"
+                                              }`}
+                                            >
+                                              {option}
+                                            </button>
+                                          ))}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleFieldChange(key, allSelected ? [] : [...options])}
+                                            className={`h-8 px-3 rounded-lg text-xs font-medium transition-colors ${
+                                              allSelected
+                                                ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                                                : "bg-[rgb(38,38,38)] text-[rgb(163,163,163)] border border-[rgb(64,64,64)] hover:bg-[rgb(48,48,48)]"
+                                            }`}
+                                          >
+                                            {toggleLabel}
+                                          </button>
+                                        </div>
+                                      );
+                                    })()
                                   ) : (
                                     <input
                                       type="text"
@@ -432,7 +488,7 @@ export default function SettingsPage() {
         onClose={() => setShowConfirm(false)}
         onConfirm={handleConfirmSave}
         title="Save Configuration"
-        description="Saved settings need a backend restart to apply."
+        description="Saved settings are persisted and applied immediately."
         icon={<AlertTriangle size={20} className="text-amber-400 shrink-0" />}
         confirmLabel="Save"
         loading={saving}

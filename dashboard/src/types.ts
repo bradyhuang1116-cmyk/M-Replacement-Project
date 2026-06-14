@@ -39,7 +39,7 @@ export interface ConfigFieldMeta {
   label: string;
   category: string;
   description?: string;
-  options?: string;
+  options?: string[];
   step?: number;
   max_length?: number;
 }

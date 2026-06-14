@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:8000/api/v1";
+const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000") + "/api/v1";
 
 export const FALLBACK_API_KEY = "dev-api-key";
 
@@ -42,3 +42,19 @@ export function apiSSE(path: string): EventSource {
 }
 
 export const API_BASE_URL = API_BASE;
+
+// ── 推理模式（本地 / 云端）──
+export type InferenceMode = "cloud" | "local";
+
+export async function getMode(): Promise<InferenceMode> {
+  const r = await apiFetch<{ mode: InferenceMode }>("/mode");
+  return r.mode;
+}
+
+export async function setMode(mode: InferenceMode): Promise<InferenceMode> {
+  const r = await apiFetch<{ mode: InferenceMode }>("/mode", {
+    method: "PUT",
+    body: JSON.stringify({ mode }),
+  });
+  return r.mode;
+}

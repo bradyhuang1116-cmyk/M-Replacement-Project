@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import type { JobState } from "@/types";
-import { Info, Play, Square, ChevronDown, ChevronUp } from "lucide-react";
+import { Info, Play, Square, ChevronDown, ChevronUp, Cloud, HardDrive } from "lucide-react";
+import { getMode, setMode, type InferenceMode } from "@/lib/api";
 
 interface Props {
   job: JobState;
@@ -31,6 +32,26 @@ export default function ReplacingCard({ job, onStart, onStop }: Props) {
   const [elapsed, setElapsed] = useState(job.elapsedSeconds);
   const [logsOpen, setLogsOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const [mode, setModeState] = useState<InferenceMode>("cloud");
+  const [modeBusy, setModeBusy] = useState(false);
+
+  useEffect(() => {
+    getMode().then(setModeState).catch(() => {});
+  }, []);
+
+  const toggleMode = async () => {
+    if (modeBusy) return;
+    const next: InferenceMode = mode === "cloud" ? "local" : "cloud";
+    setModeBusy(true);
+    try {
+      const applied = await setMode(next);
+      setModeState(applied);
+    } catch {
+      // 保持原状
+    } finally {
+      setModeBusy(false);
+    }
+  };
 
   useEffect(() => {
     setElapsed(job.elapsedSeconds);
@@ -72,6 +93,23 @@ export default function ReplacingCard({ job, onStart, onStop }: Props) {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* 本地 / 云端 模式开关（运行中禁用，处理前可切） */}
+          <button
+            onClick={toggleMode}
+            disabled={isActive || modeBusy}
+            title={isActive ? "运行中无法切换模式" : `当前：${mode === "cloud" ? "云端" : "本地"}模式，点击切换`}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-colors ${
+              isActive || modeBusy
+                ? "opacity-50 cursor-not-allowed bg-white/5 text-slate-400 border-white/10"
+                : mode === "cloud"
+                ? "cursor-pointer bg-sky-500/15 text-sky-400 border-sky-500/30 hover:bg-sky-500/25"
+                : "cursor-pointer bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/25"
+            }`}
+          >
+            {mode === "cloud" ? <Cloud size={11} /> : <HardDrive size={11} />}
+            {mode === "cloud" ? "云端" : "本地"}
+          </button>
+
           {/* Run / Running badge */}
           {!isActive ? (
             <button

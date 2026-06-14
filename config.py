@@ -33,6 +33,11 @@ PADDLEOCR_API_URL = os.getenv(
     "https://ebi011tbsdc4t6yc.aistudio-app.com/layout-parsing",
 )
 PADDLEOCR_API_TOKEN = os.getenv("PADDLEOCR_API_TOKEN", "")
+# 红框结构定位用的 PP-OCRv5 同步 OCR 端点（paddleocr_api 模式下生效）
+PADDLEOCR_V5_API_URL = os.getenv(
+    "PADDLEOCR_V5_API_URL",
+    "https://q7l0za01v4ycbbl6.aistudio-app.com/ocr",
+)
 
 # ── Docker 容器配置（NodexelOCR 自打镜像，模型已封装在镜像内，零挂载启动）──
 DOCKER_CONTAINER_NAME = os.getenv("DOCKER_CONTAINER_NAME", "nodexel")
@@ -84,6 +89,33 @@ DEFAULT_PREFIXES = ["Y", "X", "B", "H"]
 NEW_PREFIX = "H"
 
 
+def normalize_prefixes(prefixes) -> list[str]:
+    """Normalize replacement prefixes into a unique uppercase A-Z list."""
+    if isinstance(prefixes, str):
+        raw_items = prefixes.split(",")
+    elif prefixes is None:
+        raw_items = DEFAULT_PREFIXES
+    else:
+        raw_items = prefixes
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        prefix = str(item).strip().upper()
+        if not prefix:
+            continue
+        if len(prefix) != 1 or not prefix.isalpha():
+            raise ValueError("Each prefix must be a single letter A-Z")
+        if prefix in seen:
+            continue
+        seen.add(prefix)
+        normalized.append(prefix)
+
+    if not normalized:
+        raise ValueError("At least one prefix is required")
+    return normalized
+
+
 def make_pattern(prefixes=None):
     """生成匹配正则，支持多个首字母。如 ["Y","A"] → r'[YA](?=[A-Z0-9]*\d)[A-Z0-9]{6,}'
     Y 编号定义：首字母（Y/X 等） + ≥6 位字母数字，且这 ≥6 位中**至少含 1 个数字**
@@ -98,6 +130,15 @@ def make_pattern(prefixes=None):
 
 # Y 编号匹配正则 —— 保持向后兼容
 Y_PATTERN = make_pattern()
+
+
+def set_default_prefixes(prefixes) -> list[str]:
+    """Update default prefixes in place so imported module references stay hot."""
+    normalized = normalize_prefixes(prefixes)
+    DEFAULT_PREFIXES[:] = normalized
+    global Y_PATTERN
+    Y_PATTERN = make_pattern(DEFAULT_PREFIXES)
+    return list(DEFAULT_PREFIXES)
 
 # 符号→数字模糊回填映射（绿框/橙框专用，红框不适用）
 # 仅限视觉上与数字形似的非字母数字符号
@@ -166,7 +207,7 @@ ORACLE_PATH_PREFIX = os.getenv("ORACLE_PATH_PREFIX", "D:\\PLM719\\filedata")
 PLM_OUTPUT_BASE_DIR = os.getenv("PLM_OUTPUT_BASE_DIR", "D:\\SMEC")
 
 # ── WinSCP SFTP ─────────────────────────────────────────────
-WINSCP_ENABLED = os.getenv("WINSCP_ENABLED", "").strip().lower() == "true"
+WINSCP_ENABLED = os.getenv("WINSCP_ENABLED", "true").strip().lower() == "true"
 WINSCP_HOST = os.getenv("WINSCP_HOST", "192.168.0.125")
 WINSCP_PORT = int(os.getenv("WINSCP_PORT", "22"))
 WINSCP_USER = os.getenv("WINSCP_USER", "Administrator")
