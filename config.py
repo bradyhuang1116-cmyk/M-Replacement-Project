@@ -204,7 +204,7 @@ ORACLE_PATH_PREFIX = os.getenv("ORACLE_PATH_PREFIX", "D:\\PLM719\\filedata")
 PLM_OUTPUT_BASE_DIR = os.getenv("PLM_OUTPUT_BASE_DIR", "D:\\SMEC")
 
 # ── WinSCP SFTP ─────────────────────────────────────────────
-WINSCP_ENABLED = os.getenv("WINSCP_ENABLED", "").strip().lower() == "true"
+WINSCP_ENABLED = os.getenv("WINSCP_ENABLED", "true").strip().lower() == "true"
 WINSCP_HOST = os.getenv("WINSCP_HOST", "192.168.0.125")
 WINSCP_PORT = int(os.getenv("WINSCP_PORT", "22"))
 WINSCP_USER = os.getenv("WINSCP_USER", "Administrator")

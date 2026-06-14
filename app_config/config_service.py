@@ -148,12 +148,6 @@ CONFIG_META: dict[str, dict] = {
         "description": "Base directory for PLM processed output (e.g. D:\\SMEC)",
     },
     # WinSCP SFTP
-    "WINSCP_ENABLED": {
-        "category": "WinSCP SFTP",
-        "type": "text",
-        "label": "Enable SFTP",
-        "description": "Set to 'true' to enable WinSCP remote file transfer",
-    },
     "WINSCP_HOST": {
         "category": "WinSCP SFTP",
         "type": "text",
