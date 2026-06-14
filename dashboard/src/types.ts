@@ -74,3 +74,43 @@ export interface PaginatedLogs {
   items: ProcessLogItem[];
   total: number;
 }
+
+export type QueueSource = "api" | "watch_folder";
+export type QueueStatus = "pending" | "running" | "done" | "failed";
+export type PlmDeliveryStatus =
+  | "not_applicable"
+  | "pending"
+  | "uploaded"
+  | "complete"
+  | "failed";
+
+export interface QueueJobItem {
+  id: number;
+  source: QueueSource;
+  source_file: string;
+  file_path: string;
+  drawing_no: string | null;
+  revision: string | null;
+  docnumber: string | null;
+  work_seq: string | null;
+  status: QueueStatus;
+  retry_count: number;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_msg: string | null;
+  result_path: string | null;
+  plm_delivery_status: PlmDeliveryStatus;
+  plm_remote_path: string | null;
+  plm_uploaded_path: string | null;
+  plm_delivery_error: string | null;
+  plm_delivery_finished_at: string | null;
+}
+
+export interface QueueJobListResponse {
+  items: QueueJobItem[];
+  total: number;
+  counts: Record<QueueStatus, number>;
+  limit: number;
+  offset: number;
+}

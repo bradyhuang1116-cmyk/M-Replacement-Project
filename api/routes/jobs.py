@@ -11,7 +11,7 @@ import asyncio
 import collections
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,31 @@ class StartRequest(BaseModel):
     output_dir: str
     prefixes: list[str] = Field(default_factory=lambda: list(config_module.DEFAULT_PREFIXES))
     selected_files: list[str] | None = None
+
+
+def _serialize_queue_job(job) -> dict:
+    return {
+        "id": job.id,
+        "source": job.source,
+        "source_file": job.source_file,
+        "file_path": job.file_path,
+        "drawing_no": job.drawing_no,
+        "revision": job.revision,
+        "docnumber": job.docnumber,
+        "work_seq": job.work_seq,
+        "status": job.status,
+        "retry_count": job.retry_count,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "error_msg": job.error_msg,
+        "result_path": job.result_path,
+        "plm_delivery_status": job.plm_delivery_status,
+        "plm_remote_path": job.plm_remote_path,
+        "plm_uploaded_path": job.plm_uploaded_path,
+        "plm_delivery_error": job.plm_delivery_error,
+        "plm_delivery_finished_at": job.plm_delivery_finished_at,
+    }
 
 
 def _scan_input(input_dir: str) -> list[str]:
@@ -348,3 +373,64 @@ async def job_status_sse():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/jobs/queue")
+async def list_queue_jobs(
+    source: str | None = Query(default=None, description="api 或 watch_folder"),
+    status: str | None = Query(default=None, description="pending/running/done/failed"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    from modules.job_queue import JobQueue
+
+    queue = JobQueue()
+    items = queue.list_jobs(source=source, status=status, limit=limit, offset=offset)
+    total = queue.count_jobs(source=source, status=status)
+
+    counts = {
+        key: queue.count_jobs(source=source, status=key)
+        for key in ("pending", "running", "done", "failed")
+    }
+
+    return {
+        "items": [_serialize_queue_job(job) for job in items],
+        "total": total,
+        "counts": counts,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post("/jobs/queue/{job_id}/retry")
+async def retry_queue_job(job_id: int, background_tasks: BackgroundTasks):
+    from modules.job_queue import JobQueue
+    from modules.worker import Worker
+
+    queue = JobQueue()
+    job = queue.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+    if job.source != "api":
+        raise HTTPException(status_code=400, detail="仅支持重试 source=api 的任务")
+
+    if job.status == "failed":
+        try:
+            queue.retry_failed_job(job_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        return {"status": "queued", "retry_type": "processing"}
+
+    if job.status == "done" and job.plm_delivery_status == "failed":
+        worker = Worker(queue, ensure_vlm=False)
+        ok, msg = worker.can_retry_plm_delivery(job)
+        if not ok:
+            raise HTTPException(status_code=409, detail=msg)
+        try:
+            queue.retry_failed_plm_delivery(job_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        background_tasks.add_task(worker.recover_single_plm_delivery, job_id)
+        return {"status": "started", "retry_type": "plm_delivery"}
+
+    raise HTTPException(status_code=409, detail="当前任务状态不允许手动重试")
