@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
+import type { ConfigFieldMeta } from "@/types";
 import Sidebar from "@/components/Sidebar";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useConfig } from "@/hooks/useConfig";
@@ -54,6 +55,62 @@ function hasValidationErrors(errors: Record<string, string>): boolean {
   return Object.values(errors).some((v) => v !== "");
 }
 
+type OracleDbVersion = "11g" | "12c_plus";
+type OracleConnectionType = "service_name" | "sid";
+
+interface OracleUiState {
+  dbVersion: OracleDbVersion;
+  connectionType: OracleConnectionType;
+  dbName: string;
+}
+
+function fieldToString(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function getOracleUiState(current: Record<string, unknown>): OracleUiState {
+  const serviceName = fieldToString(current["ORACLE_SERVICE_NAME"]).trim();
+  const sid = fieldToString(current["ORACLE_SID"]).trim();
+  const thickRaw = fieldToString(current["ORACLE_THICK_MODE"]).trim().toLowerCase();
+  const thick = thickRaw === "true";
+
+  const connectionType: OracleConnectionType = sid ? "sid" : "service_name";
+  const dbName = sid || serviceName;
+  const dbVersion: OracleDbVersion = thick ? "11g" : "12c_plus";
+
+  return { connectionType, dbName, dbVersion };
+}
+
+function buildOracleOverrides(
+  dbVersion: OracleDbVersion,
+  connectionType: OracleConnectionType,
+  dbName: string,
+  existingClientDir: string,
+  previousDbVersion: OracleDbVersion,
+): Record<string, unknown> {
+  const trimmedName = dbName.trim();
+  const overrides: Record<string, unknown> = {};
+
+  if (connectionType === "service_name") {
+    overrides.ORACLE_SERVICE_NAME = trimmedName;
+    overrides.ORACLE_SID = "";
+  } else {
+    overrides.ORACLE_SID = trimmedName;
+    overrides.ORACLE_SERVICE_NAME = "";
+  }
+
+  if (dbVersion !== previousDbVersion) {
+    overrides.ORACLE_THICK_MODE = dbVersion === "11g" ? "true" : "false";
+  }
+
+  if (dbVersion !== "11g") {
+    overrides.ORACLE_CLIENT_LIB_DIR = existingClientDir;
+  }
+
+  return overrides;
+}
+
 export default function SettingsPage() {
   const { config, loading, saving, error, successMsg, saveConfig, reload } = useConfig();
   const [dirtyValues, setDirtyValues] = useState<Record<string, unknown>>({});
@@ -61,12 +118,14 @@ export default function SettingsPage() {
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [showConfirm, setShowConfirm] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [oracleUi, setOracleUi] = useState<OracleUiState | null>(null);
 
   useEffect(() => {
     if (config) {
       setDirtyValues({});
       setHasChanges(false);
       setValidationErrors({});
+      setOracleUi(getOracleUiState(config.current));
     }
   }, [config]);
 
@@ -93,6 +152,15 @@ export default function SettingsPage() {
     return !hasValidationErrors(validationErrors);
   }, [hasChanges, validationErrors]);
 
+  const handleOracleUiChange = useCallback((key: keyof OracleUiState, value: string) => {
+    if (!oracleUi) return;
+    setOracleUi((prev) => {
+      if (!prev) return prev;
+      return { ...prev, [key]: value } as OracleUiState;
+    });
+    setHasChanges(true);
+  }, [oracleUi]);
+
   const handleSaveClick = () => {
     // Re-validate all dirty fields
     const errors: Record<string, string> = {};
@@ -109,9 +177,39 @@ export default function SettingsPage() {
 
   const handleConfirmSave = async () => {
     setShowConfirm(false);
-    if (!hasChanges || Object.keys(dirtyValues).length === 0) return;
+    if (!hasChanges) return;
     try {
-      await saveConfig(dirtyValues);
+      let overridesToSave = { ...dirtyValues };
+
+      if (config && oracleUi) {
+        const currentOracleUi = getOracleUiState(config.current);
+        const existingClientDir = fieldToString(
+          dirtyValues.ORACLE_CLIENT_LIB_DIR ?? config.current.ORACLE_CLIENT_LIB_DIR,
+        );
+        const oracleOverrides = buildOracleOverrides(
+          oracleUi.dbVersion,
+          oracleUi.connectionType,
+          oracleUi.dbName,
+          existingClientDir,
+          currentOracleUi.dbVersion,
+        );
+
+        overridesToSave = {
+          ...overridesToSave,
+          ORACLE_SERVICE_NAME: oracleOverrides.ORACLE_SERVICE_NAME ?? "",
+          ORACLE_SID: oracleOverrides.ORACLE_SID ?? "",
+        };
+
+        if ("ORACLE_THICK_MODE" in oracleOverrides) {
+          overridesToSave.ORACLE_THICK_MODE = oracleOverrides.ORACLE_THICK_MODE;
+        }
+        if ("ORACLE_CLIENT_LIB_DIR" in oracleOverrides) {
+          overridesToSave.ORACLE_CLIENT_LIB_DIR = oracleOverrides.ORACLE_CLIENT_LIB_DIR;
+        }
+      }
+
+      if (Object.keys(overridesToSave).length === 0) return;
+      await saveConfig(overridesToSave);
       setDirtyValues({});
       setHasChanges(false);
       setValidationErrors({});
@@ -138,7 +236,11 @@ export default function SettingsPage() {
     if (!config) return [];
     return Object.entries(config.categories).map(([catName, catMeta]) => {
       const fields = Object.entries(config.meta).filter(
-        ([, fieldMeta]) => fieldMeta.category === catName
+        ([key, fieldMeta]) => fieldMeta.category === catName && ![
+          "ORACLE_SERVICE_NAME",
+          "ORACLE_SID",
+          "ORACLE_THICK_MODE",
+        ].includes(key)
       );
       return { name: catName, ...catMeta, fields };
     });
@@ -202,11 +304,54 @@ export default function SettingsPage() {
                         </div>
 
                         <div className="space-y-5">
+                          {cat.name === "Oracle Database" && config && oracleUi && (
+                            <>
+                              <div>
+                                <label className="text-sm font-medium text-[rgb(212,212,212)] mb-1 block">Database Version</label>
+                                <p className="text-xs text-[rgb(115,115,115)] mb-2">Select database version to auto-apply compatibility mode.</p>
+                                <select
+                                  value={oracleUi.dbVersion}
+                                  onChange={(e) => handleOracleUiChange("dbVersion", e.target.value)}
+                                  className="w-full max-w-xs px-3 py-2 text-sm bg-[rgb(38,38,38)] border border-[rgb(64,64,64)] rounded-lg text-[rgb(229,229,229)] focus:outline-none focus:border-[rgb(82,82,82)] transition-colors"
+                                >
+                                  <option value="12c_plus">Oracle 12c and above</option>
+                                  <option value="11g">Oracle 11g</option>
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="text-sm font-medium text-[rgb(212,212,212)] mb-1 block">Connection Type</label>
+                                <p className="text-xs text-[rgb(115,115,115)] mb-2">Choose whether your database uses Service Name or SID.</p>
+                                <select
+                                  value={oracleUi.connectionType}
+                                  onChange={(e) => handleOracleUiChange("connectionType", e.target.value)}
+                                  className="w-full max-w-xs px-3 py-2 text-sm bg-[rgb(38,38,38)] border border-[rgb(64,64,64)] rounded-lg text-[rgb(229,229,229)] focus:outline-none focus:border-[rgb(82,82,82)] transition-colors"
+                                >
+                                  <option value="service_name">Service Name</option>
+                                  <option value="sid">SID</option>
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="text-sm font-medium text-[rgb(212,212,212)] mb-1 block">Database Name</label>
+                                <p className="text-xs text-[rgb(115,115,115)] mb-2">Saved internally to Service Name or SID based on the selected connection type.</p>
+                                <input
+                                  type="text"
+                                  value={oracleUi.dbName}
+                                  onChange={(e) => handleOracleUiChange("dbName", e.target.value)}
+                                  className="w-full max-w-lg px-3 py-2 text-sm bg-[rgb(38,38,38)] border border-[rgb(64,64,64)] rounded-lg text-[rgb(229,229,229)] focus:outline-none focus:border-[rgb(82,82,82)] transition-colors"
+                                />
+                              </div>
+                            </>
+                          )}
+
                           {cat.fields.length === 0 ? (
                             <p className="text-xs text-[rgb(115,115,115)]">No fields in this category.</p>
                           ) : (
                             cat.fields.map(([key, meta]) => {
                               const err = validationErrors[key];
+                              const hideForOracle11gUi = cat.name === "Oracle Database" && key === "ORACLE_SID";
+                              if (hideForOracle11gUi) return null;
                               return (
                                 <div key={key}>
                                   <label className="text-sm font-medium text-[rgb(212,212,212)] mb-1 block">

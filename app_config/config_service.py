@@ -97,7 +97,13 @@ CONFIG_META: dict[str, dict] = {
         "category": "Oracle Database",
         "type": "text",
         "label": "Service Name",
-        "description": "Oracle service name or SID",
+        "description": "Oracle service name（12c+ 常用）；与 SID 二选一",
+    },
+    "ORACLE_SID": {
+        "category": "Oracle Database",
+        "type": "text",
+        "label": "SID",
+        "description": "Oracle SID（11g 常见）；与 Service Name 二选一",
     },
     "ORACLE_USER": {
         "category": "Oracle Database",
@@ -124,6 +130,18 @@ CONFIG_META: dict[str, dict] = {
         "label": "Max Pool Size",
         "description": "Oracle connection pool maximum connections",
         "step": 1,
+    },
+    "ORACLE_THICK_MODE": {
+        "category": "Oracle Database",
+        "type": "text",
+        "label": "Thick Mode",
+        "description": "Set to 'true' to use Oracle thick mode (recommended for some 11g environments)",
+    },
+    "ORACLE_CLIENT_LIB_DIR": {
+        "category": "Oracle Database",
+        "type": "text",
+        "label": "Instant Client Directory",
+        "description": "Oracle Instant Client directory for thick mode, e.g. C:\\oracle\\instantclient_19_26",
     },
     "ORACLE_PATH_PREFIX": {
         "category": "Oracle Database",
@@ -309,14 +327,18 @@ class ConfigService:
 
     # ── 更新覆盖值 ──────────────────────────────────────────────
 
-    def update_overrides(self, overrides: dict[str, Any]) -> dict[str, str]:
+    def update_overrides(self, overrides: dict[str, Any]) -> dict[str, Any]:
         """更新覆盖值并持久化。
 
         Args:
             overrides: {key: value} 字典，只包含需要修改的项。
 
         Returns:
-            { "status": "ok" }，或遇到无效键时抛出 ValueError。
+            {
+              "status": "ok",
+              "restart_required": bool,
+              "hot_applied": bool,
+            }
         """
         # 验证键
         unknown = [k for k in overrides if k not in CONFIG_META]
@@ -331,6 +353,11 @@ class ConfigService:
             except (ValueError, TypeError) as e:
                 raise ValueError(f"Invalid value for {key}: {e}")
 
+        from modules.oracle_helper import OracleHelper
+
+        restart_required = OracleHelper.requires_restart_for_overrides(coerced)
+        hot_applied = False
+
         with self._overrides_lock:
             self._overrides.update(coerced)
             self._save_overrides()
@@ -339,7 +366,15 @@ class ConfigService:
             for k, v in coerced.items():
                 setattr(config_module, k, v)
 
-        return {"status": "ok"}
+        if any(k.startswith("ORACLE_") for k in coerced) and not restart_required:
+            OracleHelper.reset_global_pool()
+            hot_applied = True
+
+        return {
+            "status": "ok",
+            "restart_required": restart_required,
+            "hot_applied": hot_applied,
+        }
 
     # ── 前端完整数据 ────────────────────────────────────────────
 

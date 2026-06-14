@@ -86,6 +86,7 @@ class PlmPoller:
         from modules.oracle_helper import OracleHelper
 
         oracle = OracleHelper()
+        logger.info("Oracle poll config: %s", oracle.connection_summary())
 
         try:
             tasks = oracle.fetch_pending_tasks(limit=self.task_limit)

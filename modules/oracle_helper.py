@@ -1,6 +1,9 @@
 """Oracle 数据库助手 — 连接管理与 PLM 双表 CRUD。
 
-使用 oracledb thin mode，无需 Oracle 客户端库。
+兼容 Oracle 11g/12c+：
+- 默认使用 oracledb thin mode
+- 当 ORACLE_THICK_MODE=true 时切换到 thick mode
+- 同时支持 ORACLE_SERVICE_NAME 和 ORACLE_SID 两种 DSN 形式
 """
 from __future__ import annotations
 
@@ -9,17 +12,14 @@ import threading
 
 import oracledb
 
-from config import (
-    ORACLE_HOST,
-    ORACLE_MAX_POOL,
-    ORACLE_MIN_POOL,
-    ORACLE_PASSWORD,
-    ORACLE_PORT,
-    ORACLE_SERVICE_NAME,
-    ORACLE_USER,
-)
+import config as cfg
 
 logger = logging.getLogger(__name__)
+
+
+_GLOBAL_POOL: oracledb.ConnectionPool | None = None
+_GLOBAL_LOCK = threading.Lock()
+_THICK_INIT_STATE = {"initialized": False, "lib_dir": None}
 
 
 class OracleError(Exception):
@@ -29,38 +29,100 @@ class OracleError(Exception):
 class OracleHelper:
     """Oracle 数据库助手（连接池 + PLM 双表操作）。
 
-    线程安全（读写通过连接池+锁）。连接池延迟初始化。
+    线程安全（读写通过连接池+锁）。连接池为进程级共享实例，
+    普通连接参数修改后可通过 reset_global_pool() 热重建。
     """
 
     def __init__(self) -> None:
         self._pool: oracledb.ConnectionPool | None = None
-        self._lock = threading.Lock()
+        self._lock = _GLOBAL_LOCK
 
     # ── 连接管理 ────────────────────────────────────────────────
 
+    @staticmethod
+    def reset_global_pool() -> None:
+        global _GLOBAL_POOL
+        with _GLOBAL_LOCK:
+            if _GLOBAL_POOL is not None:
+                try:
+                    _GLOBAL_POOL.close(force=True)
+                except Exception as e:
+                    logger.warning("关闭 Oracle 连接池失败（忽略）: %s", e)
+                finally:
+                    _GLOBAL_POOL = None
+            logger.info("Oracle 全局连接池已重置；下次访问将按新配置重建")
+
+    @staticmethod
+    def requires_restart_for_overrides(overrides: dict[str, object]) -> bool:
+        return any(key in overrides for key in ("ORACLE_THICK_MODE", "ORACLE_CLIENT_LIB_DIR"))
+
+    def _init_oracle_client_if_needed(self) -> None:
+        if not cfg.ORACLE_THICK_MODE:
+            return
+        lib_dir = cfg.ORACLE_CLIENT_LIB_DIR or None
+        if not _THICK_INIT_STATE["initialized"]:
+            kwargs = {}
+            if lib_dir:
+                kwargs["lib_dir"] = lib_dir
+            oracledb.init_oracle_client(**kwargs)
+            _THICK_INIT_STATE["initialized"] = True
+            _THICK_INIT_STATE["lib_dir"] = lib_dir
+            return
+        if _THICK_INIT_STATE["lib_dir"] != lib_dir:
+            raise OracleError(
+                "Oracle thick mode 客户端目录已在当前进程初始化；修改 ORACLE_CLIENT_LIB_DIR 或 ORACLE_THICK_MODE 后需要重启后端"
+            )
+
+    def _dsn_label(self) -> str:
+        if cfg.ORACLE_SERVICE_NAME:
+            return cfg.ORACLE_SERVICE_NAME
+        if cfg.ORACLE_SID:
+            return f"SID:{cfg.ORACLE_SID}"
+        return "<missing-service-or-sid>"
+
+    def connection_summary(self) -> str:
+        return (
+            f"{cfg.ORACLE_USER}@{cfg.ORACLE_HOST}:{cfg.ORACLE_PORT}/{self._dsn_label()} "
+            f"(mode={'thick' if cfg.ORACLE_THICK_MODE else 'thin'})"
+        )
+
     def _dsn(self) -> str:
-        return oracledb.makedsn(ORACLE_HOST, ORACLE_PORT, service_name=ORACLE_SERVICE_NAME)
+        if cfg.ORACLE_SERVICE_NAME:
+            return oracledb.makedsn(cfg.ORACLE_HOST, cfg.ORACLE_PORT, service_name=cfg.ORACLE_SERVICE_NAME)
+        if cfg.ORACLE_SID:
+            return oracledb.makedsn(cfg.ORACLE_HOST, cfg.ORACLE_PORT, sid=cfg.ORACLE_SID)
+        raise OracleError(
+            "Oracle 未配置：请设置 ORACLE_SERVICE_NAME 或 ORACLE_SID"
+        )
 
     def _get_pool(self) -> oracledb.ConnectionPool:
-        if self._pool is None:
+        global _GLOBAL_POOL
+        if _GLOBAL_POOL is None:
             with self._lock:
-                if self._pool is None:
-                    if not ORACLE_HOST or not ORACLE_USER:
+                if _GLOBAL_POOL is None:
+                    if not cfg.ORACLE_HOST or not cfg.ORACLE_USER:
                         raise OracleError(
                             "Oracle 未配置：请设置 ORACLE_HOST / ORACLE_USER"
                         )
-                    self._pool = oracledb.create_pool(
-                        user=ORACLE_USER,
-                        password=ORACLE_PASSWORD,
+                    self._init_oracle_client_if_needed()
+                    _GLOBAL_POOL = oracledb.create_pool(
+                        user=cfg.ORACLE_USER,
+                        password=cfg.ORACLE_PASSWORD,
                         dsn=self._dsn(),
-                        min=ORACLE_MIN_POOL,
-                        max=ORACLE_MAX_POOL,
+                        min=cfg.ORACLE_MIN_POOL,
+                        max=cfg.ORACLE_MAX_POOL,
                         timeout=30,
                     )
                     logger.info(
-                        f"Oracle 连接池已建立: {ORACLE_USER}@{ORACLE_HOST}:{ORACLE_PORT}/{ORACLE_SERVICE_NAME}"
+                        "Oracle 连接池已建立: %s@%s:%s/%s (mode=%s)",
+                        cfg.ORACLE_USER,
+                        cfg.ORACLE_HOST,
+                        cfg.ORACLE_PORT,
+                        self._dsn_label(),
+                        "thick" if cfg.ORACLE_THICK_MODE else "thin",
                     )
-        return self._pool
+        self._pool = _GLOBAL_POOL
+        return _GLOBAL_POOL
 
     def _execute(self, sql: str, params: list | dict | None = None) -> list[dict]:
         """执行 SQL 并返回 dict 列表（自动归还连接到池）。"""
