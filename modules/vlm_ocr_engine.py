@@ -156,6 +156,14 @@ def _extract_spotting_items_from_api(result: dict) -> list[dict]:
         items.append({"text": text, "polygon": polygon})
 
     if isinstance(spotting_res, dict):
+        # PaddleOCR 标准结构：rec_texts + rec_polys（实测云端 spotting_res 用此格式）
+        rec_texts = spotting_res.get("rec_texts")
+        rec_polys = spotting_res.get("rec_polys")
+        if isinstance(rec_texts, list) and isinstance(rec_polys, list):
+            for text, poly in zip(rec_texts, rec_polys):
+                _append_item(text, poly)
+            if items:
+                return items
         candidates = []
         for key in ("texts", "items", "results", "detections", "boxes"):
             value = spotting_res.get(key)
@@ -296,8 +304,29 @@ class VlmOcrEngine:
             effective_w, effective_h = w, h
 
         if self._provider == "paddleocr_api":
-            result = self._paddleocr_api_call(pil_img, "spotting")
+            # 云端返回绝对像素坐标(相对发送图)。_paddleocr_api_call 内部会把 >1MP
+            # 的图缩放，导致返回坐标偏小。这里先把图缩到 ≤1MP 并记录比例，
+            # 云端坐标按此比例还原回 pil_img 尺寸。
+            from PIL import Image as _PILImage
+            _max_px = 1280 * 28 * 28
+            ew, eh = pil_img.size
+            _total = ew * eh
+            if _total > _max_px:
+                _api_scale = (_max_px / _total) ** 0.5
+                send_img = pil_img.resize(
+                    (int(ew * _api_scale), int(eh * _api_scale)), _PILImage.LANCZOS)
+            else:
+                _api_scale = 1.0
+                send_img = pil_img
+            result = self._paddleocr_api_call(send_img, "spotting")
             spotting_items = _extract_spotting_items_from_api(result)
+            if _api_scale != 1.0:
+                inv = 1.0 / _api_scale
+                for item in spotting_items:
+                    item["polygon"] = [
+                        [int(pt[0] * inv), int(pt[1] * inv)]
+                        for pt in item["polygon"]
+                    ]
         else:
             raw = self._chat(pil_img, "Spotting:")
             spotting_items = parse_spotting_output(raw, effective_w, effective_h)

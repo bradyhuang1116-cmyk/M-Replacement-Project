@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import FolderBrowser from "@/components/FolderBrowser";
 import { apiFetch } from "@/lib/api";
+import type { ConfigResponse } from "@/types";
 import { useConfig } from "@/hooks/useConfig";
 import { FolderOpen, FileText, Play } from "lucide-react";
 
@@ -15,14 +16,6 @@ interface ScannedFile {
 }
 
 const PREFIXES = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-
-function getParentDir(path: string): string {
-  if (!path) return "";
-  const sep = path.includes("/") ? "/" : "\\";
-  const parts = path.split(sep).filter(Boolean);
-  if (parts.length <= 1) return "";
-  return parts.slice(0, -1).join(sep);
-}
 
 export default function DatasetsPage() {
   const router = useRouter();
@@ -50,6 +43,20 @@ export default function DatasetsPage() {
     } finally {
       setScanning(false);
     }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await apiFetch<ConfigResponse>("/config");
+        const inbox = String(data.current.WATCH_INBOX_DIR ?? "").trim();
+        const output = String(data.current.WATCH_OUTPUT_DIR ?? "").trim();
+        if (inbox) setInputDir(inbox);
+        if (output) setOutputDir(output);
+      } catch (e) {
+        console.error("Failed to load watch folder config:", e);
+      }
+    })();
   }, []);
 
   useEffect(() => {
@@ -143,18 +150,16 @@ export default function DatasetsPage() {
   const handleFolderSelect = (path: string) => {
     if (browseTarget === "input") {
       setInputDir(path);
-      localStorage.setItem("lastInputDir", path);
     } else {
       setOutputDir(path);
-      localStorage.setItem("lastOutputDir", path);
     }
     setBrowseTarget(null);
   };
 
   const getBrowseInitialPath = (): string => {
-    const key = browseTarget === "input" ? "lastInputDir" : "lastOutputDir";
-    const last = typeof window !== "undefined" ? localStorage.getItem(key) : null;
-    return last ? getParentDir(last) : "";
+    if (browseTarget === "input") return inputDir;
+    if (browseTarget === "output") return outputDir;
+    return "";
   };
 
   const canStart =
