@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Sidebar from "@/components/Sidebar";
 import FolderBrowser from "@/components/FolderBrowser";
 import { apiFetch } from "@/lib/api";
+import { useConfig } from "@/hooks/useConfig";
 import { FolderOpen, FileText, Play } from "lucide-react";
 
 interface ScannedFile {
@@ -25,9 +26,10 @@ function getParentDir(path: string): string {
 
 export default function DatasetsPage() {
   const router = useRouter();
+  const { config } = useConfig();
   const [inputDir, setInputDir] = useState("");
   const [outputDir, setOutputDir] = useState("");
-  const [selectedPrefixes, setSelectedPrefixes] = useState<string[]>(["Y"]);
+  const [selectedPrefixesOverride, setSelectedPrefixesOverride] = useState<string[] | null>(null);
   const [browseTarget, setBrowseTarget] = useState<"input" | "output" | null>(null);
   const [scannedFiles, setScannedFiles] = useState<ScannedFile[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
@@ -57,6 +59,17 @@ export default function DatasetsPage() {
       setSelectedFiles(new Set());
     }
   }, [inputDir, scanFiles]);
+
+  const configuredPrefixes = useMemo(() => {
+    const raw = config?.current.DEFAULT_PREFIXES;
+    if (!Array.isArray(raw) || raw.length === 0) return ["Y"];
+    const normalized = raw
+      .map((item) => String(item).trim().toUpperCase())
+      .filter((item): item is string => item.length > 0);
+    return normalized.length > 0 ? normalized : ["Y"];
+  }, [config]);
+
+  const selectedPrefixes = selectedPrefixesOverride ?? configuredPrefixes;
 
   const allSelected = scannedFiles.length > 0 && selectedFiles.size === scannedFiles.length;
 
@@ -99,18 +112,19 @@ export default function DatasetsPage() {
   };
 
   const togglePrefix = (p: string) => {
-    setSelectedPrefixes((prev) =>
-      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]
-    );
+    setSelectedPrefixesOverride((prev) => {
+      const next = prev ?? selectedPrefixes;
+      return next.includes(p) ? next.filter((x) => x !== p) : [...next, p];
+    });
   };
 
   const allPrefixesSelected = selectedPrefixes.length === PREFIXES.length;
 
   const toggleAllPrefixes = () => {
     if (allPrefixesSelected) {
-      setSelectedPrefixes([]);
+      setSelectedPrefixesOverride([]);
     } else {
-      setSelectedPrefixes([...PREFIXES]);
+      setSelectedPrefixesOverride([...PREFIXES]);
     }
   };
 

@@ -13,11 +13,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+import config as config_module
 from config import (
     SUPPORTED_EXTENSIONS,
-    DEFAULT_PREFIXES,
     OUTPUT_SUBDIR,
     VLMOCR_SUBDIR,
     PDF_REPLACEMENT_SUBDIR,
@@ -36,7 +36,7 @@ _job: dict | None = None  # { id, thread, cancel, phase, files, ... }
 class StartRequest(BaseModel):
     input_dir: str
     output_dir: str
-    prefixes: list[str] = DEFAULT_PREFIXES
+    prefixes: list[str] = Field(default_factory=lambda: list(config_module.DEFAULT_PREFIXES))
     selected_files: list[str] | None = None
 
 

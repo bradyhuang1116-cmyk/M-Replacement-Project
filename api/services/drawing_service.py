@@ -32,7 +32,7 @@ class DrawingService:
             str(file_path),
             str(self.output_dir),
             generate_debug=False,
-            prefixes=DEFAULT_PREFIXES,
+            prefixes=list(DEFAULT_PREFIXES),
         )
 
         processing_time = time.time() - start_time

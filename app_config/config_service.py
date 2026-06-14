@@ -20,6 +20,8 @@ import config as config_module
 
 logger = logging.getLogger(__name__)
 
+PREFIX_OPTIONS = [chr(code) for code in range(ord("A"), ord("Z") + 1)]
+
 # ── 覆盖文件路径（相对于项目根目录） ───────────────────────────
 OVERRIDES_DIR = Path(config_module.DATA_DIR)
 OVERRIDES_PATH = OVERRIDES_DIR / "config_overrides.json"
@@ -31,6 +33,14 @@ CONFIG_DIR = Path(os.path.dirname(os.path.abspath(config_module.__file__)))
 # ── 元数据：驱动前端渲染每个配置字段 ─────────────────────────
 
 CONFIG_META: dict[str, dict] = {
+    # Replacement Rules
+    "DEFAULT_PREFIXES": {
+        "category": "Replacement Rules",
+        "type": "multi_select",
+        "label": "Replacement Prefixes",
+        "description": "Select the drawing number prefixes to match by default",
+        "options": PREFIX_OPTIONS,
+    },
     # Worker
     "WORKER_POLL_INTERVAL": {
         "category": "Worker",
@@ -178,6 +188,10 @@ CONFIG_META: dict[str, dict] = {
 }
 
 CATEGORIES: dict[str, dict] = {
+    "Replacement Rules": {
+        "description": "Default drawing-number matching prefixes used by system processing",
+        "icon": "Cog",
+    },
     "Worker": {
         "description": "Background worker queue consumer behavior",
         "icon": "Cog",
@@ -236,8 +250,12 @@ class ConfigService:
         if path.exists():
             try:
                 with open(path, "r", encoding="utf-8") as f:
-                    self._overrides = json.load(f)
-            except (json.JSONDecodeError, OSError) as e:
+                    loaded = json.load(f)
+                self._overrides = {
+                    key: self._coerce(key, value) if key in CONFIG_META else value
+                    for key, value in loaded.items()
+                }
+            except (json.JSONDecodeError, OSError, ValueError, TypeError) as e:
                 logger.warning("读取配置覆盖文件失败，使用空覆盖: %s", e)
                 self._overrides = {}
         else:
@@ -247,7 +265,7 @@ class ConfigService:
         # 使 from config import X 或 import config; config.X 能读到持久化的值
         if self._overrides:
             for k, v in self._overrides.items():
-                setattr(config_module, k, v)
+                self._apply_runtime_value(k, v)
             logger.info("已将 %d 个覆盖值同步到 config 模块", len(self._overrides))
 
     def _save_overrides(self) -> None:
@@ -270,7 +288,13 @@ class ConfigService:
     @staticmethod
     def _coerce(key: str, raw: Any) -> Any:
         """将原始值按 config.py 默认值的类型做转换。"""
+        if key == "DEFAULT_PREFIXES":
+            return config_module.normalize_prefixes(raw)
         default = ConfigService._get_default(key)
+        if isinstance(default, bool):
+            if isinstance(raw, bool):
+                return raw
+            return str(raw).strip().lower() in {"1", "true", "yes", "on"}
         if isinstance(default, list):
             if isinstance(raw, str):
                 return [s.strip() for s in raw.split(",") if s.strip()]
@@ -307,6 +331,13 @@ class ConfigService:
         """返回所有暴露配置的生效值。"""
         return {key: self.get_effective(key) for key in CONFIG_META}
 
+    @staticmethod
+    def _apply_runtime_value(key: str, value: Any) -> None:
+        if key == "DEFAULT_PREFIXES":
+            config_module.set_default_prefixes(value)
+            return
+        setattr(config_module, key, value)
+
     # ── 更新覆盖值 ──────────────────────────────────────────────
 
     def update_overrides(self, overrides: dict[str, Any]) -> dict[str, str]:
@@ -337,7 +368,7 @@ class ConfigService:
 
             # 热应用：更新 config 模块的属性，使 import config; config.X 立即生效
             for k, v in coerced.items():
-                setattr(config_module, k, v)
+                self._apply_runtime_value(k, v)
 
         return {"status": "ok"}
 

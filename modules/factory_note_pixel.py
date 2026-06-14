@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from config import DEFAULT_PREFIXES, Y_PATTERN
+from config import DEFAULT_PREFIXES, make_pattern
 from modules.region_detector import (
     BBox,
     _get_ocr_v5,
@@ -53,7 +53,6 @@ def _get_v5():
 
 # ── Y 编号正则（含 V→Y 误识兜底）────────────────────────────────
 _FN_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
-_Y_RE = re.compile(Y_PATTERN)
 _V_RE = re.compile(r"V(?=[A-Z0-9]*\d)[A-Z0-9]{6,}")
 
 
@@ -67,7 +66,7 @@ def _find_y_token(text: str) -> str | None:
     if not text:
         return None
     up = text.upper()
-    m = _Y_RE.search(up)
+    m = re.search(make_pattern(DEFAULT_PREFIXES), up)
     if m:
         return m.group()
     m = _V_RE.search(up)
