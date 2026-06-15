@@ -1,14 +1,14 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import type { ConfigFieldMeta } from "@/types";
 import Sidebar from "@/components/Sidebar";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import { useConfig } from "@/hooks/useConfig";
-import { Save, AlertCircle, Cog, HardDrive, Database, AlertTriangle, Server } from "lucide-react";
+import { Save, AlertCircle, Cog, HardDrive, Database, AlertTriangle, Server, ClipboardCheck } from "lucide-react";
 
 const CATEGORY_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   Cog,
+  ClipboardCheck,
   HardDrive,
   Database,
   Server,
@@ -136,7 +136,6 @@ export default function SettingsPage() {
   const [hasChanges, setHasChanges] = useState(false);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [showConfirm, setShowConfirm] = useState(false);
-  const [restarting, setRestarting] = useState(false);
   const [oracleUi, setOracleUi] = useState<OracleUiState | null>(null);
 
   useEffect(() => {
@@ -465,7 +464,7 @@ export default function SettingsPage() {
 
         {/* Sticky bottom bar */}
         {config && (
-          <div className="shrink-0 sticky bottom-0 bg-[rgb(10,10,10)] border-t border-[rgb(38,38,38)] flex items-center justify-end gap-3 px-6 h-16">
+          <div className="shrink-0 sticky bottom-0 bg-[rgb(10,10,10)] flex items-center justify-end gap-3 px-6 h-24">
             {hasChanges && (
               <span className="text-xs text-[rgb(115,115,115)]">
                 Changes will be applied immediately

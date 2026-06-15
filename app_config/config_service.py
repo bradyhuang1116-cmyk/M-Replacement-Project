@@ -56,6 +56,26 @@ CONFIG_META: dict[str, dict] = {
         "description": "Maximum retry attempts for a failed task",
         "step": 1,
     },
+    "API_QUEUE_REFRESH_INTERVAL": {
+        "category": "Worker",
+        "type": "number",
+        "label": "API Queue Refresh (s)",
+        "description": "Auto refresh interval for the API Queue page in seconds",
+        "step": 0.5,
+    },
+    # Manual Review
+    "MANUAL_EDITOR_EXE_PATH": {
+        "category": "Manual Review",
+        "type": "text",
+        "label": "ManualEditor Executable",
+        "description": "Full path to ManualEditor.exe on this machine",
+    },
+    "MANUAL_EDITOR_ORIGINAL_DIR": {
+        "category": "Manual Review",
+        "type": "text",
+        "label": "Original Image Directory",
+        "description": "Source image directory passed to ManualEditor.exe with -i",
+    },
     # Watch Folder
     "WATCH_INBOX_DIR": {
         "category": "Watch Folder",
@@ -207,6 +227,10 @@ CATEGORIES: dict[str, dict] = {
     "Worker": {
         "description": "Background worker queue consumer behavior",
         "icon": "Cog",
+    },
+    "Manual Review": {
+        "description": "ManualEditor launch settings for pending-review artifacts",
+        "icon": "ClipboardCheck",
     },
     "Watch Folder": {
         "description": "PLM folder monitoring and document drop settings",

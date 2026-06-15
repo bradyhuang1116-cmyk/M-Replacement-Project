@@ -3,8 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, RefreshCcw } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
+import { useConfig } from "@/hooks/useConfig";
 import { apiFetch } from "@/lib/api";
-import type { QueueJobItem, QueueJobListResponse, QueueStatus } from "@/types";
+import type {
+  QueueJobItem,
+  QueueJobListResponse,
+  QueueStatus,
+  ReviewStatus,
+} from "@/types";
 
 const PAGE_SIZE = 50;
 
@@ -28,6 +34,18 @@ const queueStatusStyles: Record<QueueStatus, string> = {
   failed: "border-rose-500/30 bg-rose-500/10 text-rose-300",
 };
 
+const reviewStatusLabel: Record<ReviewStatus, string> = {
+  not_required: "Auto Push",
+  pending: "Waiting Review",
+  approved: "Approved",
+};
+
+const reviewStatusStyles: Record<ReviewStatus, string> = {
+  not_required: "border-[rgb(64,64,64)] bg-[rgb(38,38,38)] text-[rgb(163,163,163)]",
+  pending: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+  approved: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+};
+
 const deliveryStatusLabel: Record<QueueJobItem["plm_delivery_status"], string> = {
   not_applicable: "N/A",
   pending: "Pending",
@@ -44,8 +62,19 @@ const deliveryStatusStyles: Record<QueueJobItem["plm_delivery_status"], string> 
   failed: "border-rose-500/30 bg-rose-500/10 text-rose-300",
 };
 
+const resultMethodLabel: Record<"O" | "N", string> = {
+  O: "O",
+  N: "N",
+};
+
+function resolveRefreshIntervalSeconds(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+  return parsed;
+}
+
 function formatDateTime(value: string | null): string {
-  if (!value) return "—";
+  if (!value) return "\u2014";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
@@ -55,10 +84,16 @@ function canRetryProcessing(item: QueueJobItem): boolean {
 }
 
 function canRetryPlmDelivery(item: QueueJobItem): boolean {
-  return item.source === "api" && item.status === "done" && item.plm_delivery_status === "failed";
+  return (
+    item.source === "api" &&
+    item.status === "done" &&
+    item.plm_delivery_status === "failed" &&
+    (item.review_status === "approved" || item.review_status === "not_required")
+  );
 }
 
 export default function ApiQueuePage() {
+  const { config } = useConfig();
   const [items, setItems] = useState<QueueJobItem[]>([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<Record<QueueStatus, number>>({
@@ -75,30 +110,31 @@ export default function ApiQueuePage() {
   const [retryingJobId, setRetryingJobId] = useState<number | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  const loadQueue = useCallback(
-    async (nextStatus: "" | QueueStatus, nextPage: number) => {
-      setLoading(true);
-      setError("");
-      try {
-        const params = new URLSearchParams({
-          source: "api",
-          limit: String(PAGE_SIZE),
-          offset: String((nextPage - 1) * PAGE_SIZE),
-        });
-        if (nextStatus) params.set("status", nextStatus);
-        const res = await apiFetch<QueueJobListResponse>(`/jobs/queue?${params.toString()}`);
-        setItems(res.items);
-        setTotal(res.total);
-        setCounts(res.counts);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load API queue");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [],
+  const refreshIntervalSeconds = useMemo(
+    () => resolveRefreshIntervalSeconds(config?.current.API_QUEUE_REFRESH_INTERVAL),
+    [config],
   );
+
+  const loadQueue = useCallback(async (nextStatus: "" | QueueStatus, nextPage: number) => {
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({
+        source: "api",
+        limit: String(PAGE_SIZE),
+        offset: String((nextPage - 1) * PAGE_SIZE),
+      });
+      if (nextStatus) params.set("status", nextStatus);
+      const res = await apiFetch<QueueJobListResponse>(`/jobs/queue?${params.toString()}`);
+      setItems(res.items);
+      setTotal(res.total);
+      setCounts(res.counts);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load API queue");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -111,9 +147,9 @@ export default function ApiQueuePage() {
     if (!autoRefresh) return;
     const timer = window.setInterval(() => {
       void loadQueue(statusFilter, page);
-    }, 5000);
+    }, refreshIntervalSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, loadQueue, page, statusFilter]);
+  }, [autoRefresh, loadQueue, page, refreshIntervalSeconds, statusFilter]);
 
   const summaryCards = useMemo(
     () => [
@@ -160,7 +196,7 @@ export default function ApiQueuePage() {
           <div>
             <h1 className="text-lg font-semibold text-[rgb(245,245,245)]">API Queue</h1>
             <p className="mt-1 text-sm text-[rgb(163,163,163)]">
-              View `source=api` queue items from the backend JobQueue, including processing state, PLM delivery state, and manual retry actions.
+              View API jobs with queue state, O/N result type, review state, PLM delivery progress, and retry actions.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -171,7 +207,7 @@ export default function ApiQueuePage() {
                 onChange={(e) => setAutoRefresh(e.target.checked)}
                 className="h-4 w-4 rounded border-[rgb(64,64,64)] bg-[rgb(38,38,38)]"
               />
-              Auto refresh
+              {`Auto refresh (${refreshIntervalSeconds}s)`}
             </label>
             <button
               onClick={() => void loadQueue(statusFilter, page)}
@@ -268,6 +304,8 @@ export default function ApiQueuePage() {
                 <tr className="border-b border-[rgb(38,38,38)] text-left">
                   <th className="px-5 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Drawing</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Queue</th>
+                  <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Result</th>
+                  <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Review</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">PLM Delivery</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Created</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wider text-[rgb(115,115,115)]">Finished</th>
@@ -278,13 +316,13 @@ export default function ApiQueuePage() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
+                    <td colSpan={9} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
                       Loading queue...
                     </td>
                   </tr>
                 ) : items.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
+                    <td colSpan={9} className="px-5 py-10 text-center text-sm text-[rgb(115,115,115)]">
                       No API queue items found.
                     </td>
                   </tr>
@@ -301,12 +339,12 @@ export default function ApiQueuePage() {
                       >
                         <td className="px-5 py-3">
                           <div className="text-[rgb(229,229,229)] font-medium">
-                            {item.drawing_no || "—"}
+                            {item.drawing_no || "\u2014"}
                             {item.revision ? ` / ${item.revision}` : ""}
                           </div>
                           <div className="text-xs text-[rgb(115,115,115)] font-mono">{item.source_file}</div>
                           <div className="mt-1 text-xs text-[rgb(115,115,115)] font-mono">
-                            doc={item.docnumber || "—"} ws={item.work_seq || "—"}
+                            doc={item.docnumber || "\u2014"} ws={item.work_seq || "\u2014"}
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -316,9 +354,28 @@ export default function ApiQueuePage() {
                             >
                               {item.status}
                             </span>
-                            <span className="text-xs text-[rgb(115,115,115)]">
-                              retry={item.retry_count}
+                            <span className="text-xs text-[rgb(115,115,115)]">retry={item.retry_count}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col gap-2">
+                            <span className="inline-flex w-fit rounded-full border border-[rgb(64,64,64)] bg-[rgb(38,38,38)] px-2 py-0.5 text-xs text-[rgb(212,212,212)]">
+                              {item.result_method ? resultMethodLabel[item.result_method] : "Pending"}
                             </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col gap-2">
+                            <span
+                              className={`inline-flex min-w-[124px] items-center justify-center whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium leading-none ${reviewStatusStyles[item.review_status]}`}
+                            >
+                              {reviewStatusLabel[item.review_status]}
+                            </span>
+                            {item.reviewed_at ? (
+                              <span className="text-xs text-[rgb(115,115,115)]">
+                                {formatDateTime(item.reviewed_at)}
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -329,7 +386,7 @@ export default function ApiQueuePage() {
                               {deliveryStatusLabel[item.plm_delivery_status]}
                             </span>
                             {item.plm_delivery_error ? (
-                              <div className="max-w-[260px] text-xs text-rose-300 break-all">
+                              <div className="max-w-[240px] text-xs text-rose-300 break-all">
                                 {item.plm_delivery_error}
                               </div>
                             ) : null}
@@ -362,15 +419,17 @@ export default function ApiQueuePage() {
                               </button>
                             ) : null}
                             {!retryProcessing && !retryDelivery ? (
-                              <span className="text-xs text-[rgb(115,115,115)]">—</span>
+                              <span className="text-xs text-[rgb(115,115,115)]">
+                                {item.review_status === "pending" ? "Waiting Review" : "\u2014"}
+                              </span>
                             ) : null}
                           </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="space-y-1 text-xs text-[rgb(163,163,163)]">
                             <div className="font-mono break-all">src: {item.file_path}</div>
-                            <div className="font-mono break-all">out: {item.result_path || "—"}</div>
-                            <div className="font-mono break-all">uploaded: {item.plm_uploaded_path || "—"}</div>
+                            <div className="font-mono break-all">out: {item.result_path || "\u2014"}</div>
+                            <div className="font-mono break-all">uploaded: {item.plm_uploaded_path || "\u2014"}</div>
                             {item.error_msg ? (
                               <div className="text-rose-300 break-all">err: {item.error_msg}</div>
                             ) : null}

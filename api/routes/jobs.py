@@ -1,36 +1,45 @@
-"""任务管理接口 — 启动/停止/SSE状态推送"""
+"""Job management routes: manual batch processing, queue inspection, and review flow."""
+from __future__ import annotations
 
-import gc
-import os
-import json
-import time
-import shutil
-import threading
-import logging
 import asyncio
 import collections
+import gc
+import ipaddress
+import io
+import json
+import logging
+import os
+import shutil
+import socket
+import subprocess
+import threading
+import time
+from functools import lru_cache
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 import config as config_module
 from config import (
-    SUPPORTED_EXTENSIONS,
     OUTPUT_SUBDIR,
-    VLMOCR_SUBDIR,
     PDF_REPLACEMENT_SUBDIR,
+    SUPPORTED_EXTENSIONS,
+    VLMOCR_SUBDIR,
+    WORKER_OUTPUT_DIR,
     Y_BOXES_CSV_NAME,
 )
+from modules.job_queue import JobQueue
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# ── 全局任务状态 ──
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 _job_lock = threading.Lock()
-_job: dict | None = None  # { id, thread, cancel, phase, files, ... }
+_job: dict | None = None
+_manual_editor_launch_lock = threading.Lock()
+_manual_editor_last_launch_at = 0.0
 
 
 class StartRequest(BaseModel):
@@ -57,6 +66,9 @@ def _serialize_queue_job(job) -> dict:
         "finished_at": job.finished_at,
         "error_msg": job.error_msg,
         "result_path": job.result_path,
+        "result_method": job.result_method,
+        "review_status": job.review_status,
+        "reviewed_at": job.reviewed_at,
         "plm_delivery_status": job.plm_delivery_status,
         "plm_remote_path": job.plm_remote_path,
         "plm_uploaded_path": job.plm_uploaded_path,
@@ -66,7 +78,7 @@ def _serialize_queue_job(job) -> dict:
 
 
 def _scan_input(input_dir: str) -> list[str]:
-    files = []
+    files: list[str] = []
     for name in sorted(os.listdir(input_dir)):
         ext = os.path.splitext(name)[1].lower()
         if ext in SUPPORTED_EXTENSIONS:
@@ -74,7 +86,175 @@ def _scan_input(input_dir: str) -> list[str]:
     return files
 
 
-def _run_job(job: dict):
+def _review_output_root() -> str:
+    return JobQueue.get_review_output_dir(WORKER_OUTPUT_DIR)
+
+
+def _validate_reviewable_job(job, *, require_pending: bool) -> None:
+    if job.source != "api":
+        raise HTTPException(status_code=400, detail="only api jobs can enter review flow")
+    if job.status != "done":
+        raise HTTPException(status_code=409, detail="job is not ready for review")
+    if job.result_method != "O":
+        raise HTTPException(status_code=409, detail="only O-type jobs can be reviewed")
+    if require_pending and job.review_status != "pending":
+        raise HTTPException(status_code=409, detail="job is not pending review")
+    if not JobQueue.is_review_artifact_path(job.result_path, WORKER_OUTPUT_DIR):
+        raise HTTPException(status_code=409, detail="result file is not under the VLMOCR review directory")
+    if not job.result_path or not os.path.isfile(job.result_path):
+        raise HTTPException(status_code=404, detail="review artifact file not found")
+
+
+def _render_preview_png(image_path: str, max_dim: int = 2200) -> bytes:
+    from PIL import Image
+
+    with Image.open(image_path) as img:
+        preview = img.convert("RGB")
+        preview.thumbnail((max_dim, max_dim))
+        buffer = io.BytesIO()
+        preview.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+
+def _manual_editor_csv_path() -> str:
+    return os.path.abspath(
+        os.path.join(
+            config_module.WORKER_OUTPUT_DIR,
+            config_module.OUTPUT_SUBDIR,
+            config_module.Y_BOXES_CSV_NAME,
+        )
+    )
+
+
+def _quote_powershell(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _normalize_host(value: str) -> str:
+    host = (value or "").strip().lower()
+    if host.startswith("::ffff:"):
+        host = host[7:]
+    if "%" in host:
+        host = host.split("%", 1)[0]
+    return host
+
+
+@lru_cache(maxsize=1)
+def _local_host_candidates() -> tuple[set[str], set[str]]:
+    hostnames: set[str] = {"localhost"}
+    addresses: set[str] = {"127.0.0.1", "::1"}
+
+    for name in filter(None, {socket.gethostname(), socket.getfqdn(), "localhost"}):
+        hostnames.add(name.lower())
+        try:
+            for info in socket.getaddrinfo(name, None):
+                addr = _normalize_host(info[4][0])
+                if addr:
+                    addresses.add(addr)
+        except OSError:
+            continue
+
+    return hostnames, addresses
+
+
+def _is_local_request_host(host: str | None) -> bool:
+    normalized = _normalize_host(host or "")
+    if not normalized:
+        return False
+
+    hostnames, addresses = _local_host_candidates()
+    if normalized in hostnames or normalized in addresses:
+        return True
+
+    try:
+        addr = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    return addr.is_loopback or normalized in addresses
+
+
+def _is_manual_editor_running(exe_path: str) -> bool:
+    image_name = os.path.basename(exe_path).strip()
+    if not image_name:
+        return False
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except OSError:
+        logger.exception("Failed to inspect ManualEditor.exe process list")
+        return False
+
+    if result.returncode != 0:
+        logger.warning("tasklist returned %s while checking ManualEditor.exe", result.returncode)
+        return False
+
+    output = (result.stdout or "").strip().lower()
+    if not output or "no tasks are running" in output:
+        return False
+    return image_name.lower() in output
+
+
+def _focus_manual_editor_window(exe_path: str) -> bool:
+    process_name = os.path.splitext(os.path.basename(exe_path).strip())[0]
+    if not process_name:
+        return False
+
+    command = (
+        "$sig = '[DllImport(\"user32.dll\")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow); "
+        "[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd);'; "
+        "Add-Type -MemberDefinition $sig -Name Win32Show -Namespace ManualEditorFocus -ErrorAction SilentlyContinue | Out-Null; "
+        f"$proc = Get-Process -Name {_quote_powershell(process_name)} -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.MainWindowHandle -ne 0 } | Sort-Object StartTime | Select-Object -First 1; "
+        "if ($null -eq $proc) { exit 1 }; "
+        "[ManualEditorFocus.Win32Show]::ShowWindowAsync($proc.MainWindowHandle, 9) | Out-Null; "
+        "[ManualEditorFocus.Win32Show]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null; "
+        "exit 0"
+    )
+
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except OSError:
+        logger.exception("Failed to focus ManualEditor.exe window")
+        return False
+
+    return result.returncode == 0
+
+
+def _launch_manual_editor_elevated(
+    *,
+    exe_path: str,
+    original_dir: str,
+    replaced_dir: str,
+    filename: str,
+    csv_dir: str,
+) -> None:
+    arg_values = ["-i", original_dir, "-o", replaced_dir, "-f", filename, "--csv", csv_dir]
+    args_literal = ", ".join(_quote_powershell(value) for value in arg_values)
+    command = (
+        f"$argList = @({args_literal}); "
+        f"Start-Process -FilePath {_quote_powershell(exe_path)} "
+        "-ArgumentList $argList -Verb RunAs"
+    )
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+        creationflags=CREATE_NO_WINDOW,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _run_job(job: dict) -> None:
     input_dir = job["input_dir"]
     output_dir = job["output_dir"]
     prefixes = job["prefixes"]
@@ -87,14 +267,10 @@ def _run_job(job: dict):
     os.makedirs(vlmocr_dir, exist_ok=True)
     os.makedirs(pdf_dir, exist_ok=True)
 
-    log_path = os.path.join(
-        base_output,
-        f"job_{time.strftime('%Y%m%d_%H%M%S')}.log",
-    )
+    log_path = os.path.join(base_output, f"job_{time.strftime('%Y%m%d_%H%M%S')}.log")
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.INFO)
-    fh.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
     root_logger = logging.getLogger()
     root_logger.addHandler(fh)
 
@@ -107,44 +283,43 @@ def _run_job(job: dict):
 
     buf_handler = _BufferHandler()
     buf_handler.setLevel(logging.INFO)
-    buf_handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+    buf_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
     root_logger.addHandler(buf_handler)
 
     try:
-        # Phase 1: Start VLM service
         job["phase"] = "starting_vlm"
         try:
             from modules.docker_manager import ensure_vlm_ready
+
             ok, msg = ensure_vlm_ready()
             if not ok:
-                logger.error(f"VLM 启动失败: {msg}")
+                logger.error("VLM startup failed: %s", msg)
                 return
-            logger.info(f"VLM 就绪: {msg}")
-        except Exception as e:
-            logger.error(f"VLM 启动异常: {e}")
+            logger.info("VLM ready: %s", msg)
+        except Exception as exc:
+            logger.error("VLM startup exception: %s", exc)
             return
 
         if cancel.is_set():
             return
 
-        # Phase 2: Warm up models
         job["phase"] = "warming_up"
         try:
             from modules.region_detector import _get_ocr_v5
+
             _get_ocr_v5("en")
-            logger.info("OCR 引擎预热完成")
-        except Exception as e:
-            logger.warning(f"模型预热异常(继续处理): {e}")
+            logger.info("OCR warmup finished")
+        except Exception as exc:
+            logger.warning("Warmup warning (processing continues): %s", exc)
 
         if cancel.is_set():
             return
 
-        # Phase 3: Process files
         job["phase"] = "processing"
-        from modules.batch_processor import process_single_file
+        from modules.batch_processor import clear_gpu_cache, process_single_file
+        from modules.factory_note_pixel import clear_y_box_records
         from modules.text_replacer import clear_ocr_cache
-        from modules.factory_note_pixel import clear_y_box_records, flush_y_boxes_csv
+
         clear_ocr_cache()
         clear_y_box_records()
 
@@ -158,9 +333,7 @@ def _run_job(job: dict):
             job["files"][i]["start_time"] = time.time()
 
             try:
-                result = process_single_file(
-                    file_path, output_dir, prefixes=prefixes,
-                )
+                result = process_single_file(file_path, output_dir, prefixes=prefixes)
                 elapsed = time.time() - job["files"][i]["start_time"]
                 method = result.get("method", "ocr")
                 out_path = result.get("output_path", "")
@@ -175,36 +348,44 @@ def _run_job(job: dict):
                 m = int(elapsed // 60)
                 s = int(elapsed % 60)
 
-                job["files"][i].update({
-                    "status": "completed",
-                    "duration": f"{m}m {s:02d}s",
-                    "method": method_label,
-                    "replacedFilename": os.path.basename(out_path) if out_path else "",
-                })
-                logger.info(f"  OK [{i+1}/{len(file_paths)}] {fname}: {result.get('total', 0)} replacements ({method_label})")
+                job["files"][i].update(
+                    {
+                        "status": "completed",
+                        "duration": f"{m}m {s:02d}s",
+                        "method": method_label,
+                        "replacedFilename": os.path.basename(out_path) if out_path else "",
+                    }
+                )
+                logger.info(
+                    "OK [%s/%s] %s: %s replacements (%s)",
+                    i + 1,
+                    len(file_paths),
+                    fname,
+                    result.get("total", 0),
+                    method_label,
+                )
 
-                # 写处理日志（O/N）：O=用OCR(ocr)，N=未用OCR(vector)
                 try:
+                    from modules.filename_parser import parse as parse_filename
                     from modules.process_log import ProcessLog, method_to_ocr_flag
-                    from modules.filename_parser import parse as _parse_fn
-                    _pf = _parse_fn(fname)
+
+                    parsed = parse_filename(fname)
                     ProcessLog().record(
-                        drawing_no=_pf.drawing_no,
-                        revision=_pf.revision,
+                        drawing_no=parsed.drawing_no,
+                        revision=parsed.revision,
                         ocr_flag=method_to_ocr_flag(method),
                         status="success",
                         filename=fname,
                     )
-                except Exception as _e:
-                    logger.warning(f"  写处理日志失败（不影响结果）: {_e}")
+                except Exception as exc:
+                    logger.warning("Process log warning: %s", exc)
 
-            except Exception as e:
-                logger.error(f"  FAIL [{i+1}/{len(file_paths)}] {fname}: {e}")
+            except Exception as exc:
+                logger.error("FAIL [%s/%s] %s: %s", i + 1, len(file_paths), fname, exc)
                 job["files"][i]["status"] = "failed"
-                job["files"][i]["error"] = str(e)
+                job["files"][i]["error"] = str(exc)
 
             gc.collect()
-            from modules.batch_processor import clear_gpu_cache
             clear_gpu_cache()
 
     finally:
@@ -221,16 +402,17 @@ def _run_job(job: dict):
 
         try:
             from modules.factory_note_pixel import flush_y_boxes_csv
+
             n = flush_y_boxes_csv(os.path.join(base_output, Y_BOXES_CSV_NAME))
             if n:
-                logger.info(f"y_boxes.csv 已写入 {n} 条记录")
-        except Exception as e:
-            logger.warning(f"y_boxes.csv 写入失败（不影响结果）: {e}")
+                logger.info("y_boxes.csv written with %s rows", n)
+        except Exception as exc:
+            logger.warning("y_boxes.csv warning: %s", exc)
 
         root_logger.removeHandler(fh)
         root_logger.removeHandler(buf_handler)
         fh.close()
-        logger.info("任务完成")
+        logger.info("Job finished")
 
 
 @router.post("/jobs/start")
@@ -321,7 +503,6 @@ async def job_status_sse():
                 completed = sum(1 for f in job["files"] if f["status"] == "completed")
                 progress = int((completed / total) * 100) if total > 0 else 0
 
-                # Calculate current file elapsed
                 current_elapsed = 0
                 for f in job["files"]:
                     if f["status"] == "processing" and f.get("start_time"):
@@ -377,13 +558,11 @@ async def job_status_sse():
 
 @router.get("/jobs/queue")
 async def list_queue_jobs(
-    source: str | None = Query(default=None, description="api 或 watch_folder"),
+    source: str | None = Query(default=None, description="api or watch_folder"),
     status: str | None = Query(default=None, description="pending/running/done/failed"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ):
-    from modules.job_queue import JobQueue
-
     queue = JobQueue()
     items = queue.list_jobs(source=source, status=status, limit=limit, offset=offset)
     total = queue.count_jobs(source=source, status=status)
@@ -402,23 +581,148 @@ async def list_queue_jobs(
     }
 
 
-@router.post("/jobs/queue/{job_id}/retry")
-async def retry_queue_job(job_id: int, background_tasks: BackgroundTasks):
-    from modules.job_queue import JobQueue
+@router.get("/jobs/review")
+async def list_review_jobs(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    queue = JobQueue()
+    items = queue.list_review_jobs(limit=limit, offset=offset, output_root=WORKER_OUTPUT_DIR)
+    total = queue.count_review_jobs(output_root=WORKER_OUTPUT_DIR)
+    return {
+        "items": [_serialize_queue_job(job) for job in items],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "review_root": _review_output_root(),
+    }
+
+
+@router.post("/jobs/review/{job_id}/approve")
+async def approve_review_job(job_id: int, background_tasks: BackgroundTasks):
     from modules.worker import Worker
 
     queue = JobQueue()
     job = queue.get(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail=f"任务不存在: {job_id}")
+        raise HTTPException(status_code=404, detail=f"job not found: {job_id}")
+
+    _validate_reviewable_job(job, require_pending=True)
+
+    queue.mark_review_approved(job_id)
+    worker = Worker(queue, ensure_vlm=False)
+    background_tasks.add_task(worker.deliver_reviewed_plm_job, job_id)
+    return {"status": "started"}
+
+
+@router.get("/jobs/review/{job_id}/preview")
+async def preview_review_job(job_id: int):
+    queue = JobQueue()
+    job = queue.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job not found: {job_id}")
+
+    _validate_reviewable_job(job, require_pending=True)
+    try:
+        preview_bytes = _render_preview_png(job.result_path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"failed to render preview: {exc}") from exc
+    return Response(content=preview_bytes, media_type="image/png")
+
+
+@router.post("/jobs/review/{job_id}/manual-process")
+async def launch_manual_process(job_id: int, request: Request):
+    queue = JobQueue()
+    job = queue.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job not found: {job_id}")
+
+    _validate_reviewable_job(job, require_pending=True)
+
+    if os.name != "nt":
+        raise HTTPException(status_code=501, detail="manual process launch is only supported on Windows")
+    client_host = request.client.host if request.client else None
+    if not _is_local_request_host(client_host):
+        raise HTTPException(
+            status_code=403,
+            detail="Remote editing is unavailable. Please use this feature on the local machine.",
+        )
+
+    exe_path_raw = str(getattr(config_module, "MANUAL_EDITOR_EXE_PATH", "") or "").strip()
+    if not exe_path_raw:
+        raise HTTPException(status_code=400, detail="MANUAL_EDITOR_EXE_PATH is not configured")
+    exe_path = os.path.abspath(exe_path_raw)
+    if not os.path.isfile(exe_path):
+        raise HTTPException(status_code=404, detail=f"ManualEditor.exe not found: {exe_path}")
+
+    original_dir_raw = str(getattr(config_module, "MANUAL_EDITOR_ORIGINAL_DIR", "") or "").strip()
+    if not original_dir_raw:
+        raise HTTPException(status_code=400, detail="MANUAL_EDITOR_ORIGINAL_DIR is not configured")
+    original_dir = os.path.abspath(original_dir_raw)
+    if not os.path.isdir(original_dir):
+        raise HTTPException(status_code=404, detail=f"manual editor original directory not found: {original_dir}")
+
+    result_path = os.path.abspath(job.result_path)
+    replaced_dir = os.path.dirname(result_path)
+    if not os.path.isdir(replaced_dir):
+        raise HTTPException(status_code=404, detail=f"review artifact directory not found: {replaced_dir}")
+    filename = os.path.basename(result_path)
+
+    csv_path = _manual_editor_csv_path()
+    csv_dir = os.path.dirname(csv_path)
+    if not os.path.isdir(csv_dir):
+        raise HTTPException(status_code=404, detail=f"y_boxes.csv directory not found: {csv_dir}")
+    if not os.path.isfile(csv_path):
+        raise HTTPException(status_code=404, detail=f"y_boxes.csv not found: {csv_path}")
+
+    try:
+        with _manual_editor_launch_lock:
+            global _manual_editor_last_launch_at
+            now = time.monotonic()
+            if _is_manual_editor_running(exe_path):
+                if _focus_manual_editor_window(exe_path):
+                    logger.info("ManualEditor was already running; brought window to front for job %s", job_id)
+                    return {"status": "focused"}
+                raise HTTPException(status_code=409, detail="ManualEditor is already open.")
+            if now - _manual_editor_last_launch_at < 8:
+                raise HTTPException(status_code=409, detail="ManualEditor is starting. Please try again in a moment.")
+            _launch_manual_editor_elevated(
+                exe_path=exe_path,
+                original_dir=original_dir,
+                replaced_dir=replaced_dir,
+                filename=filename,
+                csv_dir=csv_dir,
+            )
+            _manual_editor_last_launch_at = now
+    except OSError as exc:
+        logger.exception("Failed to launch manual editor for review job %s", job_id)
+        raise HTTPException(status_code=500, detail=f"failed to launch ManualEditor.exe: {exc}") from exc
+
+    logger.info(
+        "ManualEditor launch requested for review job %s: exe=%s file=%s",
+        job_id,
+        exe_path,
+        filename,
+    )
+    return {"status": "started"}
+
+
+@router.post("/jobs/queue/{job_id}/retry")
+async def retry_queue_job(job_id: int, background_tasks: BackgroundTasks):
+    from modules.worker import Worker
+
+    queue = JobQueue()
+    job = queue.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job not found: {job_id}")
     if job.source != "api":
-        raise HTTPException(status_code=400, detail="仅支持重试 source=api 的任务")
+        raise HTTPException(status_code=400, detail="only source=api jobs support manual retry")
 
     if job.status == "failed":
         try:
             queue.retry_failed_job(job_id)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"status": "queued", "retry_type": "processing"}
 
     if job.status == "done" and job.plm_delivery_status == "failed":
@@ -428,9 +732,9 @@ async def retry_queue_job(job_id: int, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=409, detail=msg)
         try:
             queue.retry_failed_plm_delivery(job_id)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         background_tasks.add_task(worker.recover_single_plm_delivery, job_id)
         return {"status": "started", "retry_type": "plm_delivery"}
 
-    raise HTTPException(status_code=409, detail="当前任务状态不允许手动重试")
+    raise HTTPException(status_code=409, detail="current job state does not allow manual retry")

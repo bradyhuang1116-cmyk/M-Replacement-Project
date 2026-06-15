@@ -16,6 +16,7 @@ interface ConfirmDialogProps {
   variant?: Variant;
   loading?: boolean;
   children?: React.ReactNode;
+  hideCancel?: boolean;
 }
 
 const confirmBtnClass: Record<Variant, string> = {
@@ -37,6 +38,7 @@ export default function ConfirmDialog({
   variant = "default",
   loading = false,
   children,
+  hideCancel = false,
 }: ConfirmDialogProps) {
   useEffect(() => {
     if (!open) return;
@@ -70,14 +72,16 @@ export default function ConfirmDialog({
         {children && <div className="space-y-3">{children}</div>}
 
         <div className="flex gap-3 justify-end pt-1">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={loading}
-            className="px-4 py-2 rounded-lg text-sm text-[rgb(163,163,163)] hover:bg-[rgb(38,38,38)] transition-colors disabled:opacity-40"
-          >
-            {cancelLabel}
-          </button>
+          {!hideCancel ? (
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={loading}
+              className="px-4 py-2 rounded-lg text-sm text-[rgb(163,163,163)] hover:bg-[rgb(38,38,38)] transition-colors disabled:opacity-40"
+            >
+              {cancelLabel}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onConfirm}

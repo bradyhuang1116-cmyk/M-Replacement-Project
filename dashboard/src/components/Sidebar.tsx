@@ -3,13 +3,15 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Database, ScrollText, ListOrdered, Settings, Power, RotateCcw } from "lucide-react";
+import { LayoutDashboard, Database, ScrollText, ListOrdered, ClipboardCheck, Settings, Power, RotateCcw } from "lucide-react";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { getApiBaseUrl } from "@/lib/api";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Datasets", href: "/datasets", icon: Database },
   { name: "API Queue", href: "/api-queue", icon: ListOrdered },
+  { name: "Pending Review", href: "/pending-review", icon: ClipboardCheck },
   { name: "Process Logs", href: "/process-logs", icon: ScrollText },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
@@ -26,7 +28,7 @@ export default function Sidebar() {
     setShowRestart(false);
     setRestarting(true);
     try {
-      await fetch("http://localhost:8000/api/v1/system/restart", {
+      await fetch(`${getApiBaseUrl()}/system/restart`, {
         method: "POST",
       });
     } catch {
@@ -41,7 +43,7 @@ export default function Sidebar() {
   const handleShutdown = async () => {
     setShowShutdown(false);
     try {
-      await fetch("http://localhost:8000/api/v1/system/shutdown", {
+      await fetch(`${getApiBaseUrl()}/system/shutdown`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kill_docker: killDocker, kill_wsl: killWsl }),

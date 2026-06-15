@@ -77,6 +77,7 @@ export interface PaginatedLogs {
 
 export type QueueSource = "api" | "watch_folder";
 export type QueueStatus = "pending" | "running" | "done" | "failed";
+export type ReviewStatus = "not_required" | "pending" | "approved";
 export type PlmDeliveryStatus =
   | "not_applicable"
   | "pending"
@@ -100,6 +101,9 @@ export interface QueueJobItem {
   finished_at: string | null;
   error_msg: string | null;
   result_path: string | null;
+  result_method: ProcessMode | null;
+  review_status: ReviewStatus;
+  reviewed_at: string | null;
   plm_delivery_status: PlmDeliveryStatus;
   plm_remote_path: string | null;
   plm_uploaded_path: string | null;
@@ -113,4 +117,12 @@ export interface QueueJobListResponse {
   counts: Record<QueueStatus, number>;
   limit: number;
   offset: number;
+}
+
+export interface ReviewJobListResponse {
+  items: QueueJobItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  review_root: string;
 }

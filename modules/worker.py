@@ -1,4 +1,4 @@
-"""图纸处理队列 Worker，负责本地处理与 PLM 交付。"""
+"""Background worker for queue processing and PLM delivery."""
 from __future__ import annotations
 
 import gc
@@ -21,13 +21,13 @@ from config import (
     WORKER_POLL_INTERVAL,
     Y_BOXES_CSV_NAME,
 )
-from modules.job_queue import Job, JobQueue
+from modules.job_queue import Job, JobQueue, review_status_allows_plm_delivery
 
 logger = logging.getLogger(__name__)
 
 
 class Worker:
-    """单线程队列消费者。"""
+    """Single-threaded queue consumer."""
 
     def __init__(
         self,
@@ -57,7 +57,7 @@ class Worker:
 
     @staticmethod
     def build_plm_remote_output_path(job: Job, artifact_path: str) -> str:
-        """统一构建 PLM 远端与本地镜像使用的输出路径。"""
+        """Build the target PLM output path."""
         import config as cfg
 
         return os.path.join(
@@ -69,7 +69,7 @@ class Worker:
 
     @staticmethod
     def _resolve_output_base_dir(output_root: str | Path, artifact_path: str) -> str:
-        """优先按实际产物路径反推 OUTPUT 根目录，兼容历史恢复。"""
+        """Resolve the OUTPUT root for a produced artifact."""
         configured_base = os.path.join(str(output_root), OUTPUT_SUBDIR)
         artifact_abs = os.path.abspath(artifact_path)
         configured_abs = os.path.abspath(configured_base)
@@ -87,7 +87,7 @@ class Worker:
 
     @classmethod
     def build_uploaded_archive_path(cls, output_root: str | Path, artifact_path: str) -> str:
-        """构建 uploaded 归档路径，并保持与正常发送流程一致。"""
+        """Build the uploaded archive path for a produced artifact."""
         base_output = cls._resolve_output_base_dir(output_root, artifact_path)
         uploaded_root = os.path.join(os.path.dirname(base_output.rstrip("\\/")), "uploaded")
         output_relative = os.path.relpath(artifact_path, base_output)
@@ -95,15 +95,36 @@ class Worker:
 
     @staticmethod
     def infer_method_from_artifact_path(artifact_path: str) -> str:
-        """根据产物路径推断处理方式，供恢复和补发时复用。"""
+        """Infer the processing method from the artifact path."""
         normalized = artifact_path.replace("/", os.sep).replace("\\", os.sep)
         parts = {part.lower() for part in normalized.split(os.sep) if part}
         return "vector" if PDF_REPLACEMENT_SUBDIR.lower() in parts else "ocr"
 
     @staticmethod
+    def method_to_result_method(method: str) -> str:
+        from modules.process_log import method_to_ocr_flag
+
+        return method_to_ocr_flag(method)
+
+    @staticmethod
+    def result_method_to_processing_method(result_method: str | None) -> str:
+        return "ocr" if result_method == "O" else "vector"
+
+    @classmethod
+    def is_review_output_path(cls, output_root: str | Path, artifact_path: str | None) -> bool:
+        return JobQueue.is_review_artifact_path(artifact_path, output_root)
+
+    @staticmethod
     def _is_plm_delivery_job(job: Job) -> bool:
-        """只有自动 PLM 入队任务参与远端交付与恢复。"""
+        """Return whether the job participates in PLM delivery."""
         return job.source == "api" and bool(job.docnumber and job.work_seq)
+
+    def _get_processing_method_for_job(self, job: Job, artifact_path: str | None = None) -> str:
+        if job.result_method in {"O", "N"}:
+            return self.result_method_to_processing_method(job.result_method)
+        if artifact_path:
+            return self.infer_method_from_artifact_path(artifact_path)
+        return "ocr"
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -111,17 +132,17 @@ class Worker:
         Path(self.output_root).mkdir(parents=True, exist_ok=True)
         stale = self.queue.reset_stale_running()
         if stale:
-            logger.info("Worker 启动时将 %s 条残留 running 任务重置为 pending", stale)
+            logger.info("Worker startup reset %s stale running jobs to pending", stale)
         self._stop.clear()
         self._thread = threading.Thread(target=self._run_loop, name="job-worker", daemon=True)
         self._thread.start()
-        logger.info("Worker 已启动；output_root=%s", self.output_root)
+        logger.info("Worker started; output_root=%s", self.output_root)
 
     def stop(self, timeout: float = 30.0) -> None:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)
-        logger.info("Worker 已停止")
+        logger.info("Worker stopped")
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
@@ -147,14 +168,14 @@ class Worker:
                 self._process_one(job)
             except Exception:
                 logger.error(
-                    "Worker 处理任务 %s 时发生未捕获异常\n%s",
+                    "Unhandled Worker exception while processing job %s\n%s",
                     job.id,
                     traceback.format_exc(),
                 )
-                self._safe_mark_failed(job.id, "未捕获的 Worker 异常")
+                self._safe_mark_failed(job.id, "Unhandled Worker exception")
 
     def _write_plm_oracle_updates(self, job: Job, method: str) -> None:
-        """执行 PLM 交付完成后的 Oracle 双表回写。"""
+        """Write Oracle callbacks after PLM delivery completes."""
         from modules.oracle_helper import OracleHelper
         from modules.process_log import method_to_ocr_flag
 
@@ -184,7 +205,7 @@ class Worker:
         remote_path: str,
         uploaded_path: str,
     ) -> tuple[bool, str]:
-        """产物已上传归档后补做 Oracle 回写。"""
+        """Complete Oracle callbacks for a delivered PLM artifact."""
         try:
             self._write_plm_oracle_updates(job, method)
         except Exception as exc:
@@ -195,7 +216,7 @@ class Worker:
                 uploaded_path=uploaded_path,
                 error_msg=err,
             )
-            logger.warning("[job=%s] Oracle PLM 回写失败：%s", job.id, err)
+            logger.warning("[job=%s] Oracle callback failed: %s", job.id, err)
             return False, err
 
         self.queue.mark_delivery_complete(
@@ -203,7 +224,7 @@ class Worker:
             remote_path=remote_path,
             uploaded_path=uploaded_path,
         )
-        logger.info("[job=%s] PLM 交付完成", job.id)
+        logger.info("[job=%s] PLM delivery completed", job.id)
         return True, ""
 
     def _deliver_plm_output(
@@ -214,66 +235,66 @@ class Worker:
         remote_path: str | None = None,
         uploaded_path: str | None = None,
     ) -> tuple[bool, str]:
-        """执行 PLM 交付：上传远端、归档 uploaded、回写 Oracle。"""
+        """Perform PLM delivery: mirror locally, upload, archive, callback."""
         remote_path = remote_path or self.build_plm_remote_output_path(job, artifact_path)
         uploaded_path = uploaded_path or self.build_uploaded_archive_path(self.output_root, artifact_path)
         self.queue.mark_delivery_pending(job.id, remote_path, uploaded_path)
 
         if not artifact_path or not os.path.isfile(artifact_path):
-            err = f"产物文件不存在：{artifact_path}"
+            err = f"artifact file not found: {artifact_path}"
             self.queue.mark_delivery_failed(
                 job.id,
                 err,
                 remote_path=remote_path,
                 uploaded_path=uploaded_path,
             )
-            logger.warning("[job=%s] PLM 交付失败：%s", job.id, err)
+            logger.warning("[job=%s] PLM delivery failed: %s", job.id, err)
             return False, err
 
         local_plm_path = remote_path
         try:
             Path(os.path.dirname(local_plm_path)).mkdir(parents=True, exist_ok=True)
             shutil.copy2(artifact_path, local_plm_path)
-            logger.info("[job=%s] 已复制产物到 PLM 本地镜像目录：%s", job.id, local_plm_path)
+            logger.info("[job=%s] Mirrored artifact to local PLM path: %s", job.id, local_plm_path)
         except OSError as exc:
-            err = f"复制产物到 PLM 本地镜像目录失败：{exc}"
+            err = f"failed to mirror artifact to local PLM path: {exc}"
             self.queue.mark_delivery_failed(
                 job.id,
                 err,
                 remote_path=remote_path,
                 uploaded_path=uploaded_path,
             )
-            logger.warning("[job=%s] PLM 交付失败：%s", job.id, err)
+            logger.warning("[job=%s] PLM delivery failed: %s", job.id, err)
             return False, err
 
         from modules.winscp_client import WinSCPClient
 
         ok, err = WinSCPClient().upload(local_plm_path, remote_path)
         if not ok:
-            err = err or "WinSCP 上传失败"
+            err = err or "WinSCP upload failed"
             self.queue.mark_delivery_failed(
                 job.id,
                 err,
                 remote_path=remote_path,
                 uploaded_path=uploaded_path,
             )
-            logger.warning("[job=%s] PLM 上传失败：%s", job.id, err)
+            logger.warning("[job=%s] PLM upload failed: %s", job.id, err)
             return False, err
-        logger.info("[job=%s] 已上传产物到 PLM：%s", job.id, remote_path)
+        logger.info("[job=%s] Uploaded artifact to PLM: %s", job.id, remote_path)
 
         try:
             Path(os.path.dirname(uploaded_path)).mkdir(parents=True, exist_ok=True)
             shutil.move(artifact_path, uploaded_path)
-            logger.info("[job=%s] 已归档产物到 uploaded：%s", job.id, uploaded_path)
+            logger.info("[job=%s] Archived artifact to uploaded: %s", job.id, uploaded_path)
         except OSError as exc:
-            err = f"移动产物到 uploaded 失败：{exc}"
+            err = f"failed to move artifact to uploaded archive: {exc}"
             self.queue.mark_delivery_failed(
                 job.id,
                 err,
                 remote_path=remote_path,
                 uploaded_path=uploaded_path,
             )
-            logger.warning("[job=%s] PLM 归档失败：%s", job.id, err)
+            logger.warning("[job=%s] PLM archive failed: %s", job.id, err)
             return False, err
 
         self.queue.mark_delivery_uploaded(
@@ -296,71 +317,94 @@ class Worker:
         return remote_path, uploaded_path, reference_path
 
     def can_retry_plm_delivery(self, job: Job) -> tuple[bool, str]:
-        """检查当前任务是否仍具备 PLM 手动补发条件。"""
+        """Return whether a PLM delivery can be retried."""
         if not self._is_plm_delivery_job(job):
-            return False, "当前任务不是可补发的 PLM 自动任务"
+            return False, "current job is not a retryable PLM job"
+        if not review_status_allows_plm_delivery(job.result_method, job.review_status):
+            return False, "review approval is required before retrying PLM delivery"
 
         _, uploaded_path, reference_path = self._resolve_plm_retry_paths(job)
         if not reference_path:
-            return False, "缺少结果路径，无法恢复 PLM 交付"
+            return False, "missing result path; cannot recover PLM delivery"
         if uploaded_path and os.path.isfile(uploaded_path):
             return True, ""
         if job.result_path and os.path.isfile(job.result_path):
             return True, ""
-        return False, "OUTPUT 与 uploaded 中都未找到产物文件"
+        return False, "artifact file was not found in OUTPUT or uploaded"
 
     def recover_single_plm_delivery(self, job_id: int) -> tuple[bool, str]:
-        """按任务 ID 补发单条失败的 PLM 交付。"""
+        """Recover a single PLM delivery by job ID."""
         self._sync_config()
         job = self.queue.get(job_id)
         if job is None:
             return False, f"job not found: {job_id}"
         return self._recover_one_plm_delivery(job)
 
+    def deliver_reviewed_plm_job(self, job_id: int) -> tuple[bool, str]:
+        """Deliver an approved O-type PLM job."""
+        self._sync_config()
+        job = self.queue.get(job_id)
+        if job is None:
+            return False, f"job not found: {job_id}"
+        if not self._is_plm_delivery_job(job):
+            return False, "current job is not a PLM delivery job"
+        if job.review_status != "approved":
+            return False, "review approval required before PLM delivery"
+        if job.result_method != "O":
+            return False, "only O-type reviewed jobs can be delivered manually"
+        if not self.is_review_output_path(self.output_root, job.result_path):
+            return False, "review artifact is not under the VLMOCR review directory"
+        if not job.result_path or not os.path.isfile(job.result_path):
+            return False, "review artifact file not found"
+
+        return self._deliver_plm_output(job, job.result_path, "ocr")
+
     def recover_pending_plm_deliveries(self, limit: int = 100) -> None:
-        """重启后恢复未完成的 PLM 交付任务。"""
+        """Recover incomplete PLM deliveries on startup."""
         jobs = self.queue.list_recoverable_plm_deliveries(limit=limit)
         if not jobs:
             return
 
-        logger.info("开始恢复 %s 条未完成的 PLM 交付任务", len(jobs))
+        logger.info("Recovering %s incomplete PLM deliveries", len(jobs))
         for job in jobs:
             self._sync_config()
             try:
                 self._recover_one_plm_delivery(job)
             except Exception:
                 logger.warning(
-                    "[job=%s] PLM 交付恢复时发生未预期异常\n%s",
+                    "[job=%s] Unexpected error while recovering PLM delivery\n%s",
                     job.id,
                     traceback.format_exc(),
                 )
 
     def _recover_one_plm_delivery(self, job: Job) -> tuple[bool, str]:
-        """按现有文件状态继续补发，避免路径规则分叉。"""
+        """Recover PLM delivery using the current file state."""
         if not self._is_plm_delivery_job(job):
-            return False, "当前任务不是可补发的 PLM 自动任务"
+            return False, "current job is not a retryable PLM job"
+        if not review_status_allows_plm_delivery(job.result_method, job.review_status):
+            return False, "review approval required before recovering PLM delivery"
 
         remote_path, uploaded_path, reference_path = self._resolve_plm_retry_paths(job)
         if not reference_path:
-            err = "缺少结果路径，无法恢复 PLM 交付"
+            err = "missing result path; cannot recover PLM delivery"
             logger.warning("[job=%s] %s", job.id, err)
             self.queue.mark_delivery_failed(job.id, err)
             return False, err
 
         if uploaded_path and os.path.isfile(uploaded_path):
-            method = self.infer_method_from_artifact_path(uploaded_path)
+            method = self._get_processing_method_for_job(job, uploaded_path)
             self.queue.mark_delivery_uploaded(
                 job.id,
                 remote_path=remote_path,
                 uploaded_path=uploaded_path,
                 error_msg=job.plm_delivery_error,
             )
-            logger.info("[job=%s] 检测到 uploaded 产物，仅继续补做 Oracle 回写", job.id)
+            logger.info("[job=%s] Found uploaded artifact; resuming Oracle callback only", job.id)
             return self._complete_plm_delivery(job, method, remote_path, uploaded_path)
 
         if job.result_path and os.path.isfile(job.result_path):
-            method = self.infer_method_from_artifact_path(job.result_path)
-            logger.info("[job=%s] 检测到 OUTPUT 产物，继续执行 PLM 上传流程", job.id)
+            method = self._get_processing_method_for_job(job, job.result_path)
+            logger.info("[job=%s] Found OUTPUT artifact; resuming PLM upload flow", job.id)
             return self._deliver_plm_output(
                 job,
                 job.result_path,
@@ -369,8 +413,8 @@ class Worker:
                 uploaded_path=uploaded_path,
             )
 
-        err = "OUTPUT 与 uploaded 中都未找到产物文件"
-        logger.warning("[job=%s] 无法恢复 PLM 交付：%s", job.id, err)
+        err = "artifact file was not found in OUTPUT or uploaded"
+        logger.warning("[job=%s] Unable to recover PLM delivery: %s", job.id, err)
         self.queue.mark_delivery_failed(
             job.id,
             err,
@@ -380,15 +424,15 @@ class Worker:
         return False, err
 
     def _process_one(self, job: Job) -> None:
-        logger.info("[job=%s] 开始处理 %s（source=%s）", job.id, job.file_path, job.source)
+        logger.info("[job=%s] Start processing %s (source=%s)", job.id, job.file_path, job.source)
         if not os.path.isfile(job.file_path):
-            self._handle_failure(job, f"文件不存在：{job.file_path}")
+            self._handle_failure(job, f"file not found: {job.file_path}")
             return
 
         if self.ensure_vlm and not self._vlm_ready:
             ok, msg = self._ensure_vlm_ready()
             if not ok:
-                self._handle_failure(job, f"VLM 启动失败：{msg}")
+                self._handle_failure(job, f"VLM startup failed: {msg}")
                 return
             self._vlm_ready = True
 
@@ -404,7 +448,7 @@ class Worker:
 
             result = process_single_file(job.file_path, self.output_root)
         except Exception as exc:
-            logger.error("[job=%s] 处理失败：%s\n%s", job.id, exc, traceback.format_exc())
+            logger.error("[job=%s] Processing failed: %s\n%s", job.id, exc, traceback.format_exc())
             self._handle_failure(job, str(exc))
             return
         finally:
@@ -418,6 +462,7 @@ class Worker:
 
         out_path = result.get("output_path", "")
         method = result.get("method", "ocr")
+        result_method = self.method_to_result_method(method)
         final_path = out_path
         if out_path and os.path.exists(out_path):
             target_dir = pdf_dir if method == "vector" else vlmocr_dir
@@ -426,7 +471,7 @@ class Worker:
                 shutil.move(out_path, target_path)
                 final_path = target_path
             except OSError as exc:
-                logger.warning("[job=%s] 移动产物失败，保留原路径：%s", job.id, exc)
+                logger.warning("[job=%s] Failed to move artifact; keeping original path: %s", job.id, exc)
 
         for sub in ("vector", "ocr"):
             tmp_dir = os.path.join(self.output_root, sub)
@@ -441,12 +486,12 @@ class Worker:
 
             flush_y_boxes_csv(os.path.join(base_output, Y_BOXES_CSV_NAME))
         except Exception as exc:
-            logger.warning("[job=%s] 写入 y_boxes.csv 失败：%s", job.id, exc)
+            logger.warning("[job=%s] Failed to write y_boxes.csv: %s", job.id, exc)
 
         elapsed = time.time() - start
         replacements = result.get("total", 0)
         logger.info(
-            "[job=%s] 处理完成 method=%s replacements=%s elapsed=%.1fs -> %s",
+            "[job=%s] Processing completed method=%s replacements=%s elapsed=%.1fs -> %s",
             job.id,
             method,
             replacements,
@@ -464,47 +509,52 @@ class Worker:
                     ts = time.strftime("%Y%m%d_%H%M%S")
                     watch_out_path = os.path.join(self.watch_output_dir, f"{stem}_{ts}{ext}")
                 shutil.copy2(final_path, watch_out_path)
-                logger.info("[job=%s] 已复制到 watch_output：%s", job.id, watch_out_path)
+                logger.info("[job=%s] Copied artifact to watch_output: %s", job.id, watch_out_path)
                 final_path = watch_out_path
             except OSError as exc:
-                logger.warning("[job=%s] 复制到 watch_output 失败：%s", job.id, exc)
+                logger.warning("[job=%s] Failed to copy artifact to watch_output: %s", job.id, exc)
 
-        self.queue.mark_done(job.id, final_path)
+        self.queue.mark_done(job.id, final_path, result_method=result_method)
 
         try:
-            from modules.process_log import method_to_ocr_flag
-
             self._process_log.record(
                 drawing_no=job.drawing_no,
                 revision=job.revision,
-                ocr_flag=method_to_ocr_flag(method),
+                ocr_flag=result_method,
                 status="success",
                 filename=job.source_file,
+                docnumber=job.docnumber,
+                work_seq=job.work_seq,
             )
         except Exception as exc:
-            logger.warning("[job=%s] 写入处理日志失败：%s", job.id, exc)
+            logger.warning("[job=%s] Failed to record process log: %s", job.id, exc)
 
         if self._is_plm_delivery_job(job):
-            self._deliver_plm_output(job, final_path, method)
+            if result_method == "O":
+                self.queue.mark_review_pending(job.id)
+                logger.info("[job=%s] O-type PLM artifact moved to pending review: %s", job.id, final_path)
+            else:
+                self.queue.mark_review_not_required(job.id)
+                self._deliver_plm_output(job, final_path, method)
 
         if job.file_path and os.path.isfile(job.file_path):
             try:
                 os.remove(job.file_path)
             except OSError as exc:
-                logger.warning("[job=%s] 清理 processing 源文件失败：%s", job.id, exc)
+                logger.warning("[job=%s] Failed to remove processing source file: %s", job.id, exc)
 
     def _handle_failure(self, job: Job, err: str) -> None:
         self.queue.mark_failed(job.id, err)
         if self.max_retry > 0 and self.queue.requeue_for_retry(job.id, self.max_retry):
             logger.warning(
-                "[job=%s] 处理失败，已重新入队（max_retry=%s）：%s",
+                "[job=%s] Processing failed and was requeued (max_retry=%s): %s",
                 job.id,
                 self.max_retry,
                 err,
             )
             return
 
-        logger.error("[job=%s] 处理失败且不再重试：%s", job.id, err)
+        logger.error("[job=%s] Processing failed without further retry: %s", job.id, err)
         try:
             self._process_log.record(
                 drawing_no=job.drawing_no,
@@ -512,9 +562,11 @@ class Worker:
                 ocr_flag="N",
                 status="failed",
                 filename=job.source_file,
+                docnumber=job.docnumber,
+                work_seq=job.work_seq,
             )
         except Exception as exc:
-            logger.warning("[job=%s] 写入失败日志失败：%s", job.id, exc)
+            logger.warning("[job=%s] Failed to record failure log: %s", job.id, exc)
 
         if job.source == "watch_folder" and os.path.isfile(job.file_path):
             try:
@@ -525,15 +577,15 @@ class Worker:
                     ts = time.strftime("%Y%m%d_%H%M%S")
                     dst = os.path.join(self.watch_failed_dir, f"{stem}_{ts}{ext}")
                 shutil.move(job.file_path, dst)
-                logger.info("[job=%s] 已移动源文件到 failed：%s", job.id, dst)
+                logger.info("[job=%s] Moved source file to failed: %s", job.id, dst)
             except OSError as exc:
-                logger.warning("[job=%s] 移动源文件到 failed 失败：%s", job.id, exc)
+                logger.warning("[job=%s] Failed to move source file to failed: %s", job.id, exc)
 
     def _safe_mark_failed(self, job_id: int, err: str) -> None:
         try:
             self.queue.mark_failed(job_id, err)
         except Exception:
-            logger.error("标记 job=%s 为 failed 时发生异常\n%s", job_id, traceback.format_exc())
+            logger.error("Failed to mark job=%s as failed\n%s", job_id, traceback.format_exc())
 
     def _ensure_vlm_ready(self) -> tuple[bool, str]:
         try:
@@ -541,11 +593,10 @@ class Worker:
 
             return ensure_vlm_ready()
         except Exception as exc:
-            return False, f"ensure_vlm_ready 异常：{exc}"
+            return False, f"ensure_vlm_ready exception: {exc}"
 
 
 def _main() -> None:
-    """独立运行 Worker 的调试入口。"""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -554,19 +605,19 @@ def _main() -> None:
     from config import PADDLEOCR_API_URL, VLM_PROVIDER
 
     logger.info(
-        "VLM 模式：%s%s",
+        "VLM mode: %s%s",
         VLM_PROVIDER,
-        f" -> {PADDLEOCR_API_URL}" if VLM_PROVIDER == "paddleocr_api" else " -> 本地 Docker",
+        f" -> {PADDLEOCR_API_URL}" if VLM_PROVIDER == "paddleocr_api" else " -> local Docker",
     )
     queue = JobQueue()
     worker = Worker(queue)
     worker.start()
-    logger.info("Worker 主循环运行中，按 Ctrl+C 退出")
+    logger.info("Worker main loop running; press Ctrl+C to exit")
     try:
         while worker.is_running():
             time.sleep(1.0)
     except KeyboardInterrupt:
-        logger.info("收到 Ctrl+C，正在停止 Worker")
+        logger.info("Received Ctrl+C; stopping Worker")
         worker.stop()
 
 

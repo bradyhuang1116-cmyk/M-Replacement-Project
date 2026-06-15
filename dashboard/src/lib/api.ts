@@ -1,6 +1,26 @@
-const API_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000") + "/api/v1";
+const API_PATH_PREFIX = "/api/v1";
 
 export const FALLBACK_API_KEY = "dev-api-key";
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function resolveApiOrigin(): string {
+  const configuredBase = process.env.NEXT_PUBLIC_API_BASE?.trim();
+  if (configuredBase) return trimTrailingSlash(configuredBase);
+
+  if (typeof window !== "undefined") {
+    const { protocol, hostname } = window.location;
+    return `${protocol}//${hostname}:8000`;
+  }
+
+  return "http://localhost:8000";
+}
+
+export function getApiBaseUrl(): string {
+  return `${resolveApiOrigin()}${API_PATH_PREFIX}`;
+}
 
 function getApiKey(): string {
   if (typeof window === "undefined") return FALLBACK_API_KEY;
@@ -15,7 +35,7 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -28,7 +48,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 }
 
 export async function apiFetchBlob(path: string, init?: RequestInit): Promise<Blob> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${getApiBaseUrl()}${path}`, {
     ...init,
     headers: authHeaders(init?.headers),
   });
@@ -38,10 +58,10 @@ export async function apiFetchBlob(path: string, init?: RequestInit): Promise<Bl
 
 
 export function apiSSE(path: string): EventSource {
-  return new EventSource(`${API_BASE}${path}`);
+  return new EventSource(`${getApiBaseUrl()}${path}`);
 }
 
-export const API_BASE_URL = API_BASE;
+export const API_BASE_URL = getApiBaseUrl;
 
 // ── 推理模式（本地 / 云端）──
 export type InferenceMode = "cloud" | "local";

@@ -58,6 +58,8 @@ VLMOCR_SUBDIR = os.getenv("VLMOCR_SUBDIR", "VLMOCR")
 PDF_REPLACEMENT_SUBDIR = os.getenv("PDF_REPLACEMENT_SUBDIR", "PDF_Replacement")
 Y_BOXES_CSV_NAME = os.getenv("Y_BOXES_CSV_NAME", "y_boxes.csv")
 PROCESSING_REPORT_NAME = os.getenv("PROCESSING_REPORT_NAME", "processing_report.txt")
+MANUAL_EDITOR_EXE_PATH = os.getenv("MANUAL_EDITOR_EXE_PATH", "")
+MANUAL_EDITOR_ORIGINAL_DIR = os.getenv("MANUAL_EDITOR_ORIGINAL_DIR", "")
 
 # ── 持久化数据（队列 / 日志）──（§12 Phase 2+）
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(BASE_DIR, "data"))
@@ -70,6 +72,8 @@ WORKER_OUTPUT_DIR = os.getenv("WORKER_OUTPUT_DIR", os.path.join(DATA_DIR, "proce
 WORKER_POLL_INTERVAL = float(os.getenv("WORKER_POLL_INTERVAL", "1.5"))
 # Worker 单任务失败后的最大重试次数
 WORKER_MAX_RETRY = int(os.getenv("WORKER_MAX_RETRY", "1"))
+# API Queue 页面自动刷新间隔（秒）
+API_QUEUE_REFRESH_INTERVAL = float(os.getenv("API_QUEUE_REFRESH_INTERVAL", "5.0"))
 # 内部 API 鉴权（Dashboard 日志查询等）；Bearer token 默认值
 DEFAULT_INTERNAL_API_KEY = os.getenv("DEFAULT_INTERNAL_API_KEY", "dev-api-key")
 

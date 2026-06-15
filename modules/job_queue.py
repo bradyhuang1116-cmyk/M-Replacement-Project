@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from config import QUEUE_DB_PATH
+from config import OUTPUT_SUBDIR, QUEUE_DB_PATH, VLMOCR_SUBDIR, WORKER_OUTPUT_DIR
 
 _TABLE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS job_queue (
@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS job_queue (
     finished_at  TEXT,
     error_msg    TEXT,
     result_path  TEXT,
+    result_method TEXT,
+    review_status TEXT NOT NULL DEFAULT 'not_required',
+    reviewed_at   TEXT,
     plm_delivery_status      TEXT NOT NULL DEFAULT 'not_applicable',
     plm_remote_path          TEXT,
     plm_uploaded_path        TEXT,
@@ -38,6 +41,7 @@ CREATE TABLE IF NOT EXISTS job_queue (
 _INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_status ON job_queue(status)",
     "CREATE INDEX IF NOT EXISTS idx_created_at ON job_queue(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_review_status ON job_queue(review_status)",
     "CREATE INDEX IF NOT EXISTS idx_plm_delivery_status ON job_queue(plm_delivery_status)",
 )
 
@@ -50,6 +54,20 @@ _VALID_PLM_DELIVERY_STATUS = {
     "complete",
     "failed",
 }
+_VALID_RESULT_METHOD = {"O", "N"}
+_VALID_REVIEW_STATUS = {"not_required", "pending", "approved"}
+
+
+def review_status_allows_plm_delivery(
+    result_method: str | None,
+    review_status: str | None,
+) -> bool:
+    """Return whether PLM delivery is unlocked for the current review state."""
+    if result_method == "O":
+        return review_status == "approved"
+    if result_method == "N":
+        return review_status == "not_required"
+    return False
 
 
 @dataclass
@@ -69,6 +87,9 @@ class Job:
     finished_at: str | None
     error_msg: str | None
     result_path: str | None
+    result_method: str | None
+    review_status: str
+    reviewed_at: str | None
     plm_delivery_status: str
     plm_remote_path: str | None
     plm_uploaded_path: str | None
@@ -93,6 +114,9 @@ class Job:
             finished_at=row["finished_at"],
             error_msg=row["error_msg"],
             result_path=row["result_path"],
+            result_method=row["result_method"],
+            review_status=row["review_status"],
+            reviewed_at=row["reviewed_at"],
             plm_delivery_status=row["plm_delivery_status"],
             plm_remote_path=row["plm_remote_path"],
             plm_uploaded_path=row["plm_uploaded_path"],
@@ -124,9 +148,24 @@ class JobQueue:
     def _bootstrap_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_TABLE_SCHEMA)
+            self._ensure_review_columns(conn)
             self._ensure_delivery_columns(conn)
             for ddl in _INDEX_STATEMENTS:
                 conn.execute(ddl)
+
+    @staticmethod
+    def _ensure_review_columns(conn: sqlite3.Connection) -> None:
+        existing = {
+            row["name"] for row in conn.execute("PRAGMA table_info(job_queue)").fetchall()
+        }
+        required = {
+            "result_method": "TEXT",
+            "review_status": "TEXT NOT NULL DEFAULT 'not_required'",
+            "reviewed_at": "TEXT",
+        }
+        for column, ddl in required.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE job_queue ADD COLUMN {column} {ddl}")
 
     @staticmethod
     def _ensure_delivery_columns(conn: sqlite3.Connection) -> None:
@@ -202,15 +241,26 @@ class JobQueue:
             ).fetchone()
             return Job.from_row(row)
 
-    def mark_done(self, job_id: int, result_path: str) -> None:
+    def mark_done(
+        self,
+        job_id: int,
+        result_path: str,
+        result_method: str | None = None,
+    ) -> None:
+        if result_method is not None and result_method not in _VALID_RESULT_METHOD:
+            raise ValueError(f"invalid result method: {result_method!r}")
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 UPDATE job_queue
-                SET status='done', finished_at=?, result_path=?, error_msg=NULL
+                SET status='done',
+                    finished_at=?,
+                    result_path=?,
+                    result_method=COALESCE(?, result_method),
+                    error_msg=NULL
                 WHERE id=?
                 """,
-                (_now_iso(), result_path, job_id),
+                (_now_iso(), result_path, result_method, job_id),
             )
 
     def mark_failed(self, job_id: int, error_msg: str) -> None:
@@ -223,6 +273,44 @@ class JobQueue:
                 """,
                 (_now_iso(), error_msg, job_id),
             )
+
+    def set_result_method(self, job_id: int, result_method: str) -> None:
+        if result_method not in _VALID_RESULT_METHOD:
+            raise ValueError(f"invalid result method: {result_method!r}")
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE job_queue SET result_method=? WHERE id=?",
+                (result_method, job_id),
+            )
+
+    def update_review_status(
+        self,
+        job_id: int,
+        review_status: str,
+        *,
+        reviewed_at: str | None = None,
+    ) -> None:
+        if review_status not in _VALID_REVIEW_STATUS:
+            raise ValueError(f"invalid review status: {review_status!r}")
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE job_queue
+                SET review_status=?,
+                    reviewed_at=?
+                WHERE id=?
+                """,
+                (review_status, reviewed_at, job_id),
+            )
+
+    def mark_review_pending(self, job_id: int) -> None:
+        self.update_review_status(job_id, "pending", reviewed_at=None)
+
+    def mark_review_not_required(self, job_id: int) -> None:
+        self.update_review_status(job_id, "not_required", reviewed_at=None)
+
+    def mark_review_approved(self, job_id: int) -> None:
+        self.update_review_status(job_id, "approved", reviewed_at=_now_iso())
 
     def requeue_for_retry(self, job_id: int, max_retry: int) -> bool:
         with self._lock, self._connect() as conn:
@@ -239,7 +327,8 @@ class JobQueue:
                     retry_count = retry_count + 1,
                     started_at = NULL,
                     finished_at = NULL,
-                    error_msg = NULL
+                    error_msg = NULL,
+                    reviewed_at = NULL
                 WHERE id=?
                 """,
                 (job_id,),
@@ -365,6 +454,9 @@ class JobQueue:
                     finished_at = NULL,
                     error_msg = NULL,
                     result_path = NULL,
+                    result_method = NULL,
+                    review_status = 'not_required',
+                    reviewed_at = NULL,
                     plm_delivery_status = 'not_applicable',
                     plm_remote_path = NULL,
                     plm_uploaded_path = NULL,
@@ -393,6 +485,8 @@ class JobQueue:
                 raise ValueError("only api jobs support manual retry")
             if job.status != "done" or job.plm_delivery_status != "failed":
                 raise ValueError("only failed PLM deliveries can retry")
+            if not review_status_allows_plm_delivery(job.result_method, job.review_status):
+                raise ValueError("review approval is required before retrying PLM delivery")
 
             conn.execute(
                 """
@@ -466,6 +560,26 @@ class JobQueue:
             rows = conn.execute(sql, params).fetchall()
             return [Job.from_row(r) for r in rows]
 
+    @staticmethod
+    def get_review_output_dir(output_root: str | Path | None = None) -> str:
+        root = str(output_root or WORKER_OUTPUT_DIR)
+        return os.path.abspath(os.path.join(root, OUTPUT_SUBDIR, VLMOCR_SUBDIR))
+
+    @classmethod
+    def is_review_artifact_path(
+        cls,
+        result_path: str | None,
+        output_root: str | Path | None = None,
+    ) -> bool:
+        if not result_path:
+            return False
+        review_root = cls.get_review_output_dir(output_root)
+        artifact_abs = os.path.abspath(result_path)
+        try:
+            return os.path.commonpath([artifact_abs, review_root]) == review_root
+        except ValueError:
+            return False
+
     def count_jobs(
         self,
         *,
@@ -494,6 +608,45 @@ class JobQueue:
             row = conn.execute(sql, params).fetchone()
             return int(row["n"]) if row else 0
 
+    def list_review_jobs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        output_root: str | Path | None = None,
+    ) -> list[Job]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM job_queue
+                WHERE source='api'
+                  AND status='done'
+                  AND result_method='O'
+                  AND review_status='pending'
+                  AND result_path IS NOT NULL
+                ORDER BY finished_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            ).fetchall()
+            jobs = [Job.from_row(r) for r in rows]
+        return [job for job in jobs if self.is_review_artifact_path(job.result_path, output_root)]
+
+    def count_review_jobs(self, *, output_root: str | Path | None = None) -> int:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM job_queue
+                WHERE source='api'
+                  AND status='done'
+                  AND result_method='O'
+                  AND review_status='pending'
+                  AND result_path IS NOT NULL
+                """,
+            ).fetchall()
+        jobs = [Job.from_row(r) for r in rows]
+        return sum(1 for job in jobs if self.is_review_artifact_path(job.result_path, output_root))
+
     def list_recoverable_plm_deliveries(self, limit: int = 100) -> list[Job]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -503,6 +656,10 @@ class JobQueue:
                   AND source='api'
                   AND COALESCE(docnumber, '') <> ''
                   AND COALESCE(work_seq, '') <> ''
+                  AND (
+                        (result_method = 'N' AND review_status = 'not_required')
+                        OR (result_method = 'O' AND review_status = 'approved')
+                  )
                   AND (
                         plm_delivery_status IN ('pending', 'uploaded', 'failed')
                         OR plm_delivery_status IS NULL
