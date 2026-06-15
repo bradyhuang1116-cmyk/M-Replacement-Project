@@ -80,3 +80,4 @@ build/
 nuitka-crash-report.xml
 # 会话状态
 .omc/
+NodexelOCR_Delivery/
