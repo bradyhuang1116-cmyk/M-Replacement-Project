@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import ctypes
 import gc
 import ipaddress
 import io
@@ -35,6 +36,8 @@ from modules.job_queue import JobQueue
 router = APIRouter()
 logger = logging.getLogger(__name__)
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+CREATE_UNICODE_ENVIRONMENT = 0x00000400
+NORMAL_PRIORITY_CLASS = 0x00000020
 
 _job_lock = threading.Lock()
 _job: dict | None = None
@@ -126,8 +129,165 @@ def _manual_editor_csv_path() -> str:
     )
 
 
+def _resolve_manual_editor_original_file(job) -> str:
+    if not job.docnumber or not job.work_seq:
+        raise HTTPException(status_code=409, detail="PLM metadata is missing; cannot resolve original backup file")
+
+    from modules.oracle_helper import OracleHelper
+
+    location = OracleHelper().fetch_file_location(
+        job.drawing_no or "",
+        job.revision or "",
+        job.source_file,
+        job.docnumber,
+        job.work_seq,
+    )
+    if not location:
+        raise HTTPException(status_code=404, detail="original backup file location was not found in SIPM197")
+
+    original_file = os.path.abspath(
+        os.path.join(
+            config_module.ORACLE_PATH_PREFIX,
+            location.strip().lstrip("\\/"),
+        )
+    )
+    if not os.path.isfile(original_file):
+        raise HTTPException(status_code=404, detail=f"original backup file not found: {original_file}")
+    return original_file
+
+
 def _quote_powershell(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
+
+
+def _format_win_error(code: int) -> str:
+    try:
+        return ctypes.FormatError(code).strip()
+    except Exception:
+        return f"Windows error {code}"
+
+
+def _build_manual_editor_args(
+    *,
+    original_dir: str,
+    replaced_dir: str,
+    filename: str,
+    csv_dir: str,
+) -> list[str]:
+    return ["-i", original_dir, "-o", replaced_dir, "-f", filename, "--csv", csv_dir]
+
+
+def _current_process_session_id() -> int | None:
+    if os.name != "nt":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    session_id = ctypes.c_uint()
+    if not kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(session_id)):
+        return None
+    return int(session_id.value)
+
+
+def _run_process_in_active_session(executable: str, args: list[str]) -> None:
+    if os.name != "nt":
+        raise OSError("active-session launch is only supported on Windows")
+
+    wintypes = ctypes.wintypes
+    kernel32 = ctypes.windll.kernel32
+    advapi32 = ctypes.windll.advapi32
+    userenv = ctypes.windll.userenv
+    wtsapi32 = ctypes.windll.wtsapi32
+
+    class STARTUPINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD),
+            ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD),
+            ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
+            ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+            ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE),
+            ("hStdError", wintypes.HANDLE),
+        ]
+
+    class PROCESS_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", wintypes.HANDLE),
+            ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD),
+            ("dwThreadId", wintypes.DWORD),
+        ]
+
+    active_session_id = kernel32.WTSGetActiveConsoleSessionId()
+    if active_session_id == 0xFFFFFFFF:
+        raise OSError("no active desktop session was found")
+
+    user_token = wintypes.HANDLE()
+    env_block = ctypes.c_void_p()
+    proc_info = PROCESS_INFORMATION()
+
+    command_line = subprocess.list2cmdline([executable, *args])
+    working_dir = os.path.dirname(executable) or None
+
+    startup = STARTUPINFOW()
+    startup.cb = ctypes.sizeof(STARTUPINFOW)
+    startup.lpDesktop = "winsta0\\default"
+
+    try:
+        if not wtsapi32.WTSQueryUserToken(active_session_id, ctypes.byref(user_token)):
+            code = ctypes.get_last_error()
+            raise OSError(f"WTSQueryUserToken failed: {_format_win_error(code)}")
+
+        if not userenv.CreateEnvironmentBlock(ctypes.byref(env_block), user_token, False):
+            code = ctypes.get_last_error()
+            raise OSError(f"CreateEnvironmentBlock failed: {_format_win_error(code)}")
+
+        created = advapi32.CreateProcessAsUserW(
+            user_token,
+            None,
+            command_line,
+            None,
+            None,
+            False,
+            CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
+            env_block,
+            working_dir,
+            ctypes.byref(startup),
+            ctypes.byref(proc_info),
+        )
+        if not created:
+            code = ctypes.get_last_error()
+            raise OSError(f"CreateProcessAsUserW failed: {_format_win_error(code)}")
+    finally:
+        if proc_info.hThread:
+            kernel32.CloseHandle(proc_info.hThread)
+        if proc_info.hProcess:
+            kernel32.CloseHandle(proc_info.hProcess)
+        if env_block:
+            userenv.DestroyEnvironmentBlock(env_block)
+        if user_token:
+            kernel32.CloseHandle(user_token)
+
+
+def _run_powershell_in_active_session(command: str) -> bool:
+    try:
+        _run_process_in_active_session(
+            "powershell.exe",
+            ["-NoProfile", "-NonInteractive", "-Command", command],
+        )
+        return True
+    except OSError:
+        logger.exception("Failed to run PowerShell in active desktop session")
+        return False
 
 
 def _normalize_host(value: str) -> str:
@@ -216,6 +376,9 @@ def _focus_manual_editor_window(exe_path: str) -> bool:
         "exit 0"
     )
 
+    if _current_process_session_id() == 0:
+        return _run_powershell_in_active_session(command)
+
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
@@ -239,7 +402,16 @@ def _launch_manual_editor_elevated(
     filename: str,
     csv_dir: str,
 ) -> None:
-    arg_values = ["-i", original_dir, "-o", replaced_dir, "-f", filename, "--csv", csv_dir]
+    arg_values = _build_manual_editor_args(
+        original_dir=original_dir,
+        replaced_dir=replaced_dir,
+        filename=filename,
+        csv_dir=csv_dir,
+    )
+    if _current_process_session_id() == 0:
+        _run_process_in_active_session(exe_path, arg_values)
+        return
+
     args_literal = ", ".join(_quote_powershell(value) for value in arg_values)
     command = (
         f"$argList = @({args_literal}); "
@@ -655,10 +827,8 @@ async def launch_manual_process(job_id: int, request: Request):
     if not os.path.isfile(exe_path):
         raise HTTPException(status_code=404, detail=f"ManualEditor.exe not found: {exe_path}")
 
-    original_dir_raw = str(getattr(config_module, "MANUAL_EDITOR_ORIGINAL_DIR", "") or "").strip()
-    if not original_dir_raw:
-        raise HTTPException(status_code=400, detail="MANUAL_EDITOR_ORIGINAL_DIR is not configured")
-    original_dir = os.path.abspath(original_dir_raw)
+    original_file = _resolve_manual_editor_original_file(job)
+    original_dir = os.path.dirname(original_file)
     if not os.path.isdir(original_dir):
         raise HTTPException(status_code=404, detail=f"manual editor original directory not found: {original_dir}")
 
@@ -699,9 +869,10 @@ async def launch_manual_process(job_id: int, request: Request):
         raise HTTPException(status_code=500, detail=f"failed to launch ManualEditor.exe: {exc}") from exc
 
     logger.info(
-        "ManualEditor launch requested for review job %s: exe=%s file=%s",
+        "ManualEditor launch requested for review job %s: exe=%s original=%s file=%s",
         job_id,
         exe_path,
+        original_file,
         filename,
     )
     return {"status": "started"}
