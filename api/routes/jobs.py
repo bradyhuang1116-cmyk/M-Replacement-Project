@@ -495,6 +495,18 @@ def _run_job(job: dict) -> None:
         clear_ocr_cache()
         clear_y_box_records()
 
+        # 模拟 PLM 图号：原图文件夹下 _plm_drawing_no.json（{filename: 图号}）。
+        # 生产环境图号走 PLM/worker 路径，此 sidecar 不存在时图号为 None、行为不变。
+        _plm_map = {}
+        _sidecar = os.path.join(input_dir, "_plm_drawing_no.json")
+        if os.path.isfile(_sidecar):
+            try:
+                with open(_sidecar, encoding="utf-8") as _f:
+                    _plm_map = json.load(_f)
+                logger.info("加载模拟 PLM 图号: %d 条", len(_plm_map))
+            except Exception as exc:
+                logger.warning("读取 _plm_drawing_no.json 失败: %s", exc)
+
         for i, file_path in enumerate(file_paths):
             if cancel.is_set():
                 break
@@ -505,7 +517,8 @@ def _run_job(job: dict) -> None:
             job["files"][i]["start_time"] = time.time()
 
             try:
-                result = process_single_file(file_path, output_dir, prefixes=prefixes)
+                _dno = _plm_map.get(fname)
+                result = process_single_file(file_path, output_dir, prefixes=prefixes, drawing_no=_dno)
                 elapsed = time.time() - job["files"][i]["start_time"]
                 method = result.get("method", "ocr")
                 out_path = result.get("output_path", "")

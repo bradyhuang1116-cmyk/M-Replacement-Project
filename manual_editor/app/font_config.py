@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-_PROJECT_FONT_NAME = "dingliesongtypeface20241217-2.ttf"
+_PROJECT_FONT_NAME = "basictitlefont-1.ttf"
 
 
 def find_font() -> str | None:

@@ -11,10 +11,12 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-from config import SUPPORTED_EXTENSIONS, Y_BOXES_CSV_NAME, PROCESSING_REPORT_NAME
+from config import (SUPPORTED_EXTENSIONS, Y_BOXES_CSV_NAME, PROCESSING_REPORT_NAME,
+                    ENABLE_GEOM_CORRECTION, ENABLE_WORD_MATERIAL)
 from modules.file_ingestion import load_file
 from modules.pdf_vector_handler import is_vector_pdf, replace_text_in_pdf
-from modules.region_detector import detect_all_regions, _enhance_vertical_lines
+from modules.region_detector import (detect_all_regions, _enhance_vertical_lines,
+                                     _auto_rotate_to_upright)
 from modules.text_replacer import replace_in_all_regions
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,7 @@ def process_single_file(
     generate_debug: bool = False,
     regions_override: dict = None,
     prefixes: list[str] = None,
+    drawing_no: str | None = None,
 ) -> dict:
     """
     处理单个图纸文件。
@@ -95,28 +98,66 @@ def process_single_file(
     )
 
     # 区域检测
+    _geom_corrected = False  # 几何矫正分支已在外部转正, 跳过下面的重旋转
     if regions_override:
         regions = regions_override
         logger.info(f"使用预检测区域: {[k for k in regions if not k.startswith('_')]}")
+    elif ENABLE_GEOM_CORRECTION:
+        # 几何矫正流程: 先粗转正(90/180) → 再细矫(deskew+dewarp) → 矫正图即交付物,
+        # 后续全流程(含保存)都跑在矫正后的 img_array 上, 不复原。
+        from modules.dewarp import correct_region
+        orig_shape = img_array.shape[:2]
+        img_array, rot_code = _auto_rotate_to_upright(img_array, drawing_no=drawing_no)
+        if rot_code is not None:
+            logger.info(f"粗转正: rot_code={rot_code}")
+        img_array, corr_info = correct_region(img_array, logger=logger.info)
+        logger.info(f"几何矫正: {corr_info}")
+        enhanced = _enhance_vertical_lines(img_array)
+        regions = detect_all_regions(
+            enhanced, region_config, prefixes=prefixes, drawing_no=drawing_no,
+            pre_rotated=True, orig_shape=orig_shape, rot_code=rot_code)
+        _geom_corrected = True
     else:
         enhanced = _enhance_vertical_lines(img_array)
-        regions = detect_all_regions(enhanced, region_config, prefixes=prefixes)
+        regions = detect_all_regions(enhanced, region_config, prefixes=prefixes, drawing_no=drawing_no)
 
     # 如果检测时旋转了图像，将 img_array 也旋转（后续操作都在旋转后的图像上）
-    rot_code = regions.get("_metadata", {}).get("rotation")
-    if rot_code is not None:
-        img_array = cv2.rotate(img_array, rot_code)
-        logger.info(f"应用旋转到图像: rot_code={rot_code}")
+    # 几何矫正分支已在外部完成转正+矫正, 不再重旋转。
+    if not _geom_corrected:
+        rot_code = regions.get("_metadata", {}).get("rotation")
+        if rot_code is not None:
+            img_array = cv2.rotate(img_array, rot_code)
+            # enhanced 也必须同步旋转：region bbox 是旋转后坐标系，下游 cyan 检测
+            # 若用未旋转的 enhanced 裁切会坐标错位（裁到空白区，编号全漏）。
+            if 'enhanced' in locals():
+                enhanced = cv2.rotate(enhanced, rot_code)
+            logger.info(f"应用旋转到图像: rot_code={rot_code}")
 
-    # ── 文件名首字母 → 输出抑制规则 ──
-    # 内部依赖（如橙框搜索区以红框为锚）照常计算；这里只把不应进入最终输出
-    # 的 region 设为 None，下游 cyan 生成 / text_replacer / debug 绘图 / y_boxes
-    # 看到 None 一律跳过。
+    # ── 图号首字母 → 输出抑制规则 ──
+    # 图号来自 PLM（drawing_no），不是文件名。内部依赖（如橙框搜索区以红框为
+    # 锚）照常计算；这里只把不应进入最终输出的 region 设为 None，下游 cyan 生成
+    # / text_replacer / debug 绘图 / y_boxes 看到 None 一律跳过。
     #   Y         → 全输出
     #   B         → 不输出红框
     #   P/G/O/J   → 不输出绿框 + 橙框
     #   其它字母  → 仅输出工厂注意（红/绿/橙都不输出）
-    first_letter = basename[0].upper() if basename else ''
+    # 图号来源优先级：
+    #   1. PLM drawing_no 有值：字母首字母用之；数字开头(异常) → 直接 Y(全输出)
+    #   2. drawing_no 缺失(CLI/未走PLM)：绿框OCR → 橙框OCR → 默认 Y
+    def _first_letter_of(s):
+        s = (s or "").strip().upper()
+        return s[0] if s and s[0].isalpha() else ''  # 数字/空 → 无字母
+
+    _meta = regions.get("_metadata", {}) or {}
+    _dno = (drawing_no or "").strip()
+    if _dno:
+        first_letter = _first_letter_of(_dno) or 'Y'
+    else:
+        first_letter = (
+            _first_letter_of(_meta.get("bottom_right_text"))
+            or _first_letter_of(_meta.get("top_left_text"))
+            or 'Y'
+        )
     if first_letter == 'Y':
         suppress: set[str] = set()
     elif first_letter == 'B':
@@ -127,7 +168,7 @@ def process_single_file(
         suppress = {"material_code_column", "bottom_right_number", "top_left_number"}
     for key in suppress:
         if regions.get(key) is not None:
-            logger.info(f"  跳框规则 (首字母={first_letter or '?'}): 抑制 {key}")
+            logger.info(f"  跳框规则 (图号首字母={first_letter or '?'}): 抑制 {key}")
             regions[key] = None
 
     detected = {k: v for k, v in regions.items() if v is not None}
@@ -138,6 +179,10 @@ def process_single_file(
     reg_metadata = regions.setdefault("_metadata", {})
     if red_bbox and not reg_metadata.get("cyan_box_data"):
         from modules.text_replacer import detect_cyan_boxes, detect_row_ys_for_red_box
+        if ENABLE_WORD_MATERIAL:
+            # 词级(字符级)为主 + 原 detect_cyan_boxes 双策略兜底
+            from modules.material_word_detect import make_word_detect_cyan
+            detect_cyan_boxes = make_word_detect_cyan(detect_cyan_boxes)
         use_img = enhanced if 'enhanced' in locals() else img_array
         table_search_bbox = reg_metadata.get("table_search_area")
         row_ys = detect_row_ys_for_red_box(
@@ -162,7 +207,7 @@ def process_single_file(
         Image.fromarray(debug_img).save(debug_path, quality=90)
 
     # 文本替换（使用预检测的 cyan_box_data，不重新 OCR）
-    modified, replacements = replace_in_all_regions(img_array, regions, filename=basename, prefixes=prefixes)
+    modified, replacements = replace_in_all_regions(img_array, regions, filename=basename, prefixes=prefixes, drawing_no=drawing_no)
 
     # 保存（输出格式与原始输入一致）
     ocr_dir = os.path.join(output_dir, "ocr")

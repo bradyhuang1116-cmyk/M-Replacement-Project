@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -36,10 +37,33 @@ from .render import CommittedBox, render_committed_boxes
 logger = logging.getLogger(__name__)
 
 
+def _find_logo() -> str | None:
+    """返回 logo 图标绝对路径，找不到返回 None。
+    搜索顺序同字体：PyInstaller(sys._MEIPASS/assets) → repo 下 assets → cwd。
+    """
+    names = ("logo.ico", "logo.png")
+    dirs = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        dirs.append(Path(meipass) / "assets")
+    here = Path(__file__).resolve()
+    dirs.append(here.parent.parent / "assets")   # manual_editor/assets
+    dirs.append(Path.cwd() / "manual_editor" / "assets")
+    for d in dirs:
+        for n in names:
+            p = d / n
+            if p.exists():
+                return str(p)
+    return None
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("手动编号框编辑器")
+        _logo = _find_logo()
+        if _logo:
+            self.setWindowIcon(QIcon(_logo))
         self.resize(1600, 1000)
 
         self._original_dir: Path | None = None

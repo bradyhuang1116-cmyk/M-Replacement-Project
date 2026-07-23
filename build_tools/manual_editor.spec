@@ -11,7 +11,10 @@ a = Analysis(
     binaries=[],
     datas=[
         # 字体打进 exe，运行时解压到 sys._MEIPASS/fonts/（font_config 已支持）
-        ('../fonts/dingliesongtypeface20241217-2.ttf', 'fonts'),
+        ('../fonts/basictitlefont-1.ttf', 'fonts'),
+        # logo 打进 exe，运行时解压到 sys._MEIPASS/assets/（_find_logo 已支持窗口图标）
+        ('../manual_editor/assets/logo.ico', 'assets'),
+        ('../manual_editor/assets/logo.png', 'assets'),
     ],
     hiddenimports=[
         'manual_editor',
@@ -58,4 +61,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='../manual_editor/assets/logo.ico',   # exe 文件图标
 )

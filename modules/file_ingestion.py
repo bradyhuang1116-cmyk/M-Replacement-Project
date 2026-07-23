@@ -128,12 +128,24 @@ def convert_pdf_to_tif(pdf_path: str, output_dir: str, dpi: int = 600, max_dim: 
     target_w = int(rect.width * zoom)
     target_h = int(rect.height * zoom)
 
-    # 如果超过最大尺寸，降低zoom
-    if max(target_w, target_h) > max_dim:
-        scale = max_dim / max(target_w, target_h)
-        zoom *= scale
+    # 分级尺寸上限：正常/中等图守 max_dim(7000)；超大图放宽以保最低有效DPI，
+    # 但不超防OOM硬顶(15000)。避免超大PDF被压到极低DPI(曾600→53)糊掉编号后缀。
+    #   - 600DPI渲染 ≤ max_dim → 不降级(正常图, 原状不变)
+    #   - 超 max_dim 且压到 max_dim 会使等效DPI < MIN_DPI(150, 太糊) →
+    #     放宽上限到"保MIN_DPI所需尺寸"与HARD_CAP的较小值; 否则守 max_dim。
+    MIN_DPI = 150
+    HARD_CAP = 15000
+    biggest = max(target_w, target_h)
+    if biggest > max_dim:
+        if dpi * (max_dim / biggest) < MIN_DPI:
+            need = int(max(rect.width, rect.height) * MIN_DPI / 72.0)
+            eff_cap = min(need, HARD_CAP)
+        else:
+            eff_cap = max_dim
+        zoom *= eff_cap / biggest
         mat = fitz.Matrix(zoom, zoom)
-        logger.info(f"PDF尺寸过大，降低DPI: {dpi} → {int(zoom * 72)}")
+        logger.info(f"PDF尺寸过大，降低DPI: {dpi} → {int(zoom * 72)} "
+                    f"(上限{eff_cap}px, 保DPI下限{MIN_DPI})")
 
     pix = page.get_pixmap(matrix=mat, alpha=False)
 

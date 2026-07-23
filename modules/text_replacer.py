@@ -825,6 +825,10 @@ def _render_text_distributed(
 
     render_size = max(target_h * 2, 32)
 
+    # 描边加粗：LANCZOS 缩小会把细笔画抗锯齿成半透明灰，视觉发淡。
+    # 用 stroke_width 给笔画加一圈同色描边（比例 2.5% 字号），缩小后仍黑实。
+    stroke = int(round(render_size * 0.025))
+
     try:
         font = ImageFont.truetype(font_path, render_size)
     except (IOError, OSError):
@@ -832,7 +836,7 @@ def _render_text_distributed(
 
     dummy = Image.new("RGBA", (1, 1))
     draw_dummy = ImageDraw.Draw(dummy)
-    bb = draw_dummy.textbbox((0, 0), text, font=font)
+    bb = draw_dummy.textbbox((0, 0), text, font=font, stroke_width=stroke)
     text_w = bb[2] - bb[0]
     text_h = bb[3] - bb[1]
 
@@ -842,7 +846,8 @@ def _render_text_distributed(
     # 在刚好够大的画布上紧凑渲染
     img = Image.new("RGBA", (text_w, text_h), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
-    draw.text((-bb[0], -bb[1]), text, fill=text_color, font=font)
+    draw.text((-bb[0], -bb[1]), text, fill=text_color, font=font,
+              stroke_width=stroke, stroke_fill=text_color)
 
     # 等比例缩放
     scale_h = target_h / text_h
@@ -904,48 +909,52 @@ def replace_y_in_region_pixel(
         for item in cyan_box_data:
             cell_bbox = item["bbox"]
             old_text = item["text"]
-            has_strike = item["has_strikethrough"]
             gx, gy_fill = cell_bbox.x, cell_bbox.y
             safe_w, fill_h = cell_bbox.w, cell_bbox.h
             new_text = "H" + old_text
 
-            # 删除线：从原始图检测掩膜
-            if has_strike:
-                cell_gray = cv2.cvtColor(
-                    orig_ref[gy_fill:gy_fill + fill_h, gx:gx + safe_w],
-                    cv2.COLOR_RGB2GRAY,
-                )
-                strike_mask = _detect_strikethrough_mask(cell_gray)
-                if strike_mask is not None and np.any(strike_mask):
-                    strike_restore_data.append((strike_mask, gx, gy_fill))
+            # 红框单元格收缩：左右各内缩 2.5%(按宽)；上边内缩 4.5%、下边 3.5%(按高)，
+            # 避免涂到边框线/相邻单元格。至少留 FILL_MARGIN(2px)防越界。
+            mx = max(int(round(safe_w * 0.025)), FILL_MARGIN)
+            my_top = max(int(round(fill_h * 0.045)), FILL_MARGIN)
+            my_bot = max(int(round(fill_h * 0.035)), FILL_MARGIN)
+
+            # 删除线：净化阶段判定本 cell 有删除线（作废标记）。替换后在 cell
+            # 中线强行画一条横线即可——不还原原始位置，简单可靠。
+            if item.get("has_strikethrough"):
+                strike_restore_data.append((gx, gy_fill, safe_w, fill_h, mx))
 
             # 白填充 (numpy)
             cv2.rectangle(modified,
-                (gx + FILL_MARGIN, gy_fill + FILL_MARGIN),
-                (gx + safe_w - FILL_MARGIN, gy_fill + fill_h - FILL_MARGIN),
+                (gx + mx, gy_fill + my_top),
+                (gx + safe_w - mx, gy_fill + fill_h - my_bot),
                 (255, 255, 255), -1)
 
             # 渲染新文字（收集，稍后批量粘贴）
-            render_w = max(safe_w - 2 * FILL_MARGIN, 6)
-            render_h = max(fill_h - 2 * FILL_MARGIN, 6)
+            render_w = max(safe_w - 2 * mx, 6)
+            render_h = max(fill_h - my_top - my_bot, 6)
             text_img = _render_text_distributed(new_text, render_w, render_h)
-            text_paste_data.append((text_img, gx + FILL_MARGIN, gy_fill + FILL_MARGIN))
+            text_paste_data.append((text_img, gx + mx, gy_fill + my_top))
 
             cyan_boxes.append(cell_bbox)
             replacements.append((old_text, new_text))
             logger.info(f"  替换(预检测): {old_text} → {new_text}")
 
-        # 先恢复删除线（在白底之上）
-        for strike_mask, gx, gy_fill in strike_restore_data:
-            _restore_protected_pixels(modified, orig_ref, strike_mask, gx, gy_fill)
-            logger.info(f"  删除线已恢复: ({gx}, {gy_fill})")
-
-        # 再批量粘贴文字（在删除线之上，文字不被遮挡）
+        # 批量粘贴文字
         if text_paste_data:
             pil_modified = Image.fromarray(modified)
             for text_img, px, py in text_paste_data:
                 pil_modified.paste(text_img, (px, py), text_img)
             modified = np.array(pil_modified)
+
+        # 最后画回删除线（盖在新文字之上 → 整行作废标记保留）：cell 中线一条横线
+        for gx, gy_fill, safe_w, fill_h, mx in strike_restore_data:
+            y = gy_fill + fill_h // 2
+            cv2.line(modified,
+                     (gx + mx, y),
+                     (gx + safe_w - mx, y),
+                     (0, 0, 0), thickness=2)
+            logger.info(f"  删除线已画回(中线): cell@({gx},{gy_fill})")
 
     elif use_grid_alignment and row_ys and len(row_ys) >= 2:
         # ── 网格对齐模式：逐格扫描 ──
@@ -1239,6 +1248,9 @@ def _classify_lines_by_grid(all_lines: list[int], cell_height: int,
     """网格步进分类：从第一条线开始，期望下一条行线在 +cell_height ±tolerance。
     匹配到的是行线，其余是删除线。
 
+    若 +cell_height 处无匹配，尝试 +2×/+3×cell_height（跨过边界线恰好被
+    "穿文字净化"剔除的行），避免在缺一条线时整链断裂。
+
     Returns: (table_lines, strike_lines)
     """
     if not all_lines:
@@ -1249,22 +1261,34 @@ def _classify_lines_by_grid(all_lines: list[int], cell_height: int,
     cur = 0
 
     while True:
-        expected = all_lines[cur] + cell_height
-        best_idx = None
-        best_dist = float('inf')
-        for j in range(cur + 1, len(all_lines)):
-            d = abs(all_lines[j] - expected)
-            if d < best_dist:
-                best_idx = j
-                best_dist = d
-            if all_lines[j] > expected + tolerance:
+        matched = False
+        # 依次尝试 1/2/3 倍 cell_height（容忍中间缺失的行边界线）
+        for mult in (1, 2, 3):
+            expected = all_lines[cur] + cell_height * mult
+            tol = tolerance * mult  # 跳行时容差按倍放宽
+            best_idx = None
+            best_dist = float('inf')
+            for j in range(cur + 1, len(all_lines)):
+                d = abs(all_lines[j] - expected)
+                if d < best_dist:
+                    best_idx = j
+                    best_dist = d
+                if all_lines[j] > expected + tol:
+                    break
+            if best_idx is not None and best_dist <= tol:
+                # 跳行匹配（mult>1）：中间缺失的行边界线（被净化或漏检）按
+                # cell_height 等分补回为合成行线，避免出现无 cell 的空洞，
+                # 否则落在空洞里的编号（如紧邻被净化删除线的行）会漏框。
+                if mult > 1:
+                    base = all_lines[cur]
+                    for k in range(1, mult):
+                        table_lines.append(base + cell_height * k)
+                table_lines.append(all_lines[best_idx])
+                used.add(best_idx)
+                cur = best_idx
+                matched = True
                 break
-
-        if best_idx is not None and best_dist <= tolerance:
-            table_lines.append(all_lines[best_idx])
-            used.add(best_idx)
-            cur = best_idx
-        else:
+        if not matched:
             break
 
     strike_lines = [all_lines[i] for i in range(len(all_lines)) if i not in used]
@@ -1292,6 +1316,85 @@ def _make_strike_mask(chunk_gray: np.ndarray, strike_ys_local: list[int],
         mask[y_top:y_bot, :] = h_only
 
     return mask
+
+
+def _filter_strikes_by_text_overlap(
+    binary: np.ndarray, lines: list[int],
+    band_inner: int = 2, band_outer: int = 12,
+    ink_mult: float = 1.8, min_lines: int = 4,
+) -> list[int]:
+    """按"是否穿过文字"剔除删除线，返回干净的候选行线列表。
+
+    判据（用户确认，最可靠）：删除线叠在编号墨迹上，其上下邻域文字墨迹显著高于
+    落在空白行间带的真表格行线。对每条候选线，取其上下 [band_inner, band_outer]
+    邻域（排除线本体）的行墨迹占宽比均值，若 > 全部线邻域中位数 × ink_mult，
+    判为删除线剔除。
+
+    binary: _preprocess_for_table 产出（ink=255，保留文字墨迹）。
+    不改 _filter_strikethrough_lines；这是行检测阶段的前置净化。
+    """
+    if len(lines) < min_lines:
+        return lines, []  # 行线太少，不冒险剔除（返回空删除线列表，保持二元返回契约）
+
+    H, W = binary.shape
+    row_ink = binary.sum(axis=1) / 255.0 / max(W, 1)  # 每行墨迹占宽比 0~1
+
+    def _neigh_ink(ly):
+        up = [row_ink[y] for y in range(max(0, ly - band_outer), max(0, ly - band_inner))]
+        dn = [row_ink[y] for y in range(min(H, ly + band_inner + 1), min(H, ly + band_outer + 1))]
+        nb = up + dn
+        return sum(nb) / len(nb) if nb else 0.0
+
+    neighs = [_neigh_ink(ly) for ly in lines]
+    med = float(np.median(neighs))
+    if med <= 0:
+        return lines, []
+    thresh = med * ink_mult
+
+    kept, removed = [], []
+    for ly, nk in zip(lines, neighs):
+        if nk > thresh:
+            removed.append(ly)
+        else:
+            kept.append(ly)
+    # 安全阀：若判掉太多（>40%），可能是整列文字密集，放弃剔除以免误杀
+    if removed and len(kept) >= max(min_lines - 1, len(lines) * 0.6):
+        logger.info(
+            f"  穿文字净化: 识别删除线 {len(removed)} 条 @ {removed} "
+            f"(邻域墨迹>中位{med:.3f}×{ink_mult})")
+        return kept, removed
+    if removed:
+        logger.info(f"  穿文字净化: 候选剔除 {len(removed)} 条但占比过高，放弃(保留全部)")
+    return lines, []
+
+
+def _cell_has_strike(cell_gray: np.ndarray, score_thresh: float = 0.4) -> bool:
+    """逐 cell 判断是否有删除线（作废标记）。
+
+    删除线特征：穿过文字中部的横向连通墨迹，可能波浪/高低不平、长度略超文字。
+    方法：取中部带(20%~85%，避开上下行框线)，纵向膨胀容忍波浪起伏，再水平开
+    运算(核宽≈列宽30%)只留长横向连通；最大横向占宽比 > score_thresh 判有删除线。
+    干净行的数字是短竖笔画，横向开运算后基本消失（实测分≈0）。
+    """
+    if cell_gray is None or cell_gray.size == 0:
+        return False
+    h, w = cell_gray.shape[:2]
+    if h < 12 or w < 20:
+        return False
+    _, bw = cv2.threshold(cell_gray, 0, 255,
+                          cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    mid = bw[int(h * 0.2):int(h * 0.85), :]
+    if mid.size == 0:
+        return False
+    # 纵向膨胀容忍波浪起伏
+    mid = cv2.dilate(mid, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 7)), 1)
+    # 水平开运算：只保留长横向连通（核宽≈30%列宽）
+    kw = max(int(w * 0.30), 15)
+    ho = cv2.morphologyEx(
+        mid, cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (kw, 1)))
+    score = (ho.sum(axis=1) / 255.0 / w).max() if ho.size else 0.0
+    return score > score_thresh
 
 
 def detect_cyan_boxes(
@@ -1335,21 +1438,42 @@ def detect_cyan_boxes(
         logger.warning("  投影法检测行线不足，跳过青框生成")
         return [], []
 
-    # ── 确定单元格高度（>50px 间距的众数）──
+    # ── 穿文字净化：识别叠在编号上的删除线，从行线候选剔除（避免挤偏网格步进），
+    #    但保留它们的位置供后续 inpaint 修复被划掉的行 ──
+    all_lines, text_strikes = _filter_strikes_by_text_overlap(binary, all_lines)
+
+    # ── 确定单元格高度 + 间距离散度 ──
+    # cell_height 用「最常见间距簇的中位数」：众数(取整到5)在 93 这类值上会偏到
+    # 95，固定累加会漂移断链；中位数更准。同时算变异系数 CV 判手画 vs 电脑表格。
     gaps = [all_lines[i + 1] - all_lines[i] for i in range(len(all_lines) - 1)]
     large_gaps = [g for g in gaps if g > 50]
     if not large_gaps:
         logger.warning("  无有效大间距，跳过青框生成")
         return [], []
-    rounded = [round(g / 5) * 5 for g in large_gaps]
-    cell_height = Counter(rounded).most_common(1)[0][0]
+    # 取主间距簇（排除跨行的 2x/3x 大间距）：先用中位数圈定 [0.6,1.4]×median 的簇
+    _med0 = sorted(large_gaps)[len(large_gaps) // 2]
+    base_gaps = [g for g in large_gaps if 0.6 * _med0 <= g <= 1.4 * _med0] or large_gaps
+    base_gaps_sorted = sorted(base_gaps)
+    cell_height = base_gaps_sorted[len(base_gaps_sorted) // 2]  # 中位数
+    _mean = sum(base_gaps) / len(base_gaps)
+    _std = (sum((g - _mean) ** 2 for g in base_gaps) / len(base_gaps)) ** 0.5
+    cv = _std / _mean if _mean else 0.0
 
     # ── 网格步进分类 ──
+    # 容差自适应：CV 小=电脑表格(间距精确)→严容差；CV 大=手画(间距抖动)→宽容差。
+    if cv < 0.05:
+        grid_tol = GRID_TOLERANCE  # 电脑表格，保持严格
+    else:
+        grid_tol = max(GRID_TOLERANCE, int(cell_height * min(cv, 0.2)))
     table_lines, strike_lines = _classify_lines_by_grid(
-        all_lines, cell_height, tolerance=GRID_TOLERANCE
+        all_lines, cell_height, tolerance=grid_tol
     )
+    # 穿文字净化识别出的删除线并入 strike_lines，供后续 inpaint 修复被划掉的行
+    if text_strikes:
+        strike_lines = sorted(set(strike_lines) | set(text_strikes))
     logger.info(f"  投影法: {len(all_lines)} 条线 → 行线 {len(table_lines)}, "
-                f"删除线 {len(strike_lines)}, cell_h={cell_height}px")
+                f"删除线 {len(strike_lines)}, cell_h={cell_height}px, "
+                f"CV={cv:.3f}, tol={grid_tol}")
 
     if debug_dir:
         grid_vis = cv2.cvtColor(box_gray, cv2.COLOR_GRAY2RGB)
@@ -1498,16 +1622,20 @@ def detect_cyan_boxes(
                         matched_cell_ys.add(tl)
                         cyan_boxes.append(BBox(bbox.x, bbox.y + tl,
                                                bbox.w, cell_height))
-                        cell_has_strike = any(tl < sy < tl + cell_height
-                                              for sy in strike_lines)
+                        # 删除线判定：逐 cell 独立检测中部带的横向连通墨迹
+                        # （波浪/略超文字宽的删除线也能抓），不依赖行线列表。
+                        cell_gray_for_strike = box_gray[
+                            tl:min(tl + cell_height, box_h), :]
+                        has_strike = _cell_has_strike(cell_gray_for_strike)
                         cyan_box_data.append({
                             "bbox": BBox(bbox.x, bbox.y + tl,
                                          bbox.w, cell_height),
                             "text": text_ns,
-                            "has_strikethrough": cell_has_strike,
+                            "has_strikethrough": has_strike,
                             "cell_top": tl,
                         })
-                        logger.info(f"  青框: cell_top={tl}, 匹配='{text_ns}'")
+                        logger.info(f"  青框: cell_top={tl}, 匹配='{text_ns}'"
+                                    f"{' [删除线]' if has_strike else ''}")
                     break
 
     logger.info(f"  分片OCR: {len(chunks)} 片, {len(cyan_boxes)} 个青框, "
@@ -1603,6 +1731,7 @@ def replace_in_all_regions(
     image: np.ndarray, regions: dict[str, BBox | None],
     filename: str | None = None,
     prefixes: list[str] = None,
+    drawing_no: str | None = None,
 ) -> tuple[np.ndarray, list]:
     """
     对所有检测到的区域执行文本替换。
@@ -1633,17 +1762,16 @@ def replace_in_all_regions(
 
     prefixes = prefixes or DEFAULT_PREFIXES
     prefixes_upper = [p.upper() for p in prefixes]
-    prefix_pattern = make_pattern(prefixes)
 
-    # 从文件名提取编号
-    def _extract_from_filename(fname):
-        if not fname:
-            return None
-        base = os.path.splitext(os.path.basename(fname))[0].upper()
-        m = re.search(prefix_pattern, base)
-        return m.group() if m else None
-
-    filename_y = _extract_from_filename(filename)
+    # PLM 图号（drawing_no）是投票第三方的唯一来源——它本身就是干净的图号
+    # （如 "YX304B543" / "P124006C204"），直接采用、不过 prefix 正则：
+    # 因为真实图号首字母 P/O 可能不在 prefixes 集合里，过 _valid_prefix 会被误杀。
+    # 数字开头视为异常，丢弃。
+    # 【严格】图号只来自 PLM，绝不从文件名提取——文件名（PLM 哈希名）不可靠，
+    # 缺图号时第三方留空、由绿框+橙框两方决，不再用文件名兜底。
+    _plm_no = (drawing_no or "").strip().upper().replace(" ", "")
+    if _plm_no and not _plm_no[0].isalpha():
+        _plm_no = ""
 
     # 文本验证：首字母+至少4位、无空格、首字母在 prefixes 中
     def _valid_prefix(s):
@@ -1703,11 +1831,12 @@ def replace_in_all_regions(
         elif region_name in ("bottom_right_number", "top_left_number"):
             # 首次遇到绿/橙框时执行五方校验
             if region_name == "bottom_right_number":
-                # 三方投票（绿框、橙框、文件名）— 红框不参与
+                # 三方投票（绿框、橙框、图号）— 红框不参与
                 g = _valid_prefix(green_text)
                 o = _valid_prefix(orange_text)
-                f = _valid_prefix(filename_y)
-                logger.info(f"  三方校验: green={g}, orange={o}, filename={f}")
+                # 第三方只认 PLM 图号；无图号则留空（不参与投票），不碰文件名
+                f = _plm_no or None
+                logger.info(f"  三方校验: green={g}, orange={o}, 图号={f}")
 
                 candidates = [x for x in [g, o, f] if x]
                 source_y = None
@@ -1725,7 +1854,7 @@ def replace_in_all_regions(
                         logger.info(f"  三方校验：多数一致({top_count}/{len(candidates)}) → '{source_y}'")
                     else:
                         source_y = f or g or o
-                        logger.info(f"  三方校验：全不同，优先文件名/绿/橙 → '{source_y}'")
+                        logger.info(f"  三方校验：全不同，优先图号/绿/橙 → '{source_y}'")
 
                 # 保存结果供橙框复用
                 if source_y:
@@ -1802,7 +1931,25 @@ def replace_in_all_regions(
                 (draw_x + draw_w, draw_y + draw_h),
                 (255, 255, 255), -1,
             )
-            text_img = _render_text_distributed(new_text, draw_w, draw_h)
+            orientation = fc.get("orientation")
+            if orientation is None:
+                # 横排：直接按竖条 bbox 渲染
+                text_img = _render_text_distributed(new_text, draw_w, draw_h)
+            else:
+                # 竖排：在"转正后的横向画布"上渲染横排文字，再逆旋转回竖排方向。
+                # orientation = 检测时把竖排转正的旋转码 → 渲染画布尺寸为
+                # bbox 旋转后的 (w,h)，逆旋转后正好回到 (draw_w, draw_h)。
+                if orientation == cv2.ROTATE_90_CLOCKWISE:
+                    canvas_w, canvas_h = draw_h, draw_w
+                    inv_transpose = Image.ROTATE_90       # 逆 = CCW
+                elif orientation == cv2.ROTATE_90_COUNTERCLOCKWISE:
+                    canvas_w, canvas_h = draw_h, draw_w
+                    inv_transpose = Image.ROTATE_270      # 逆 = CW
+                else:  # ROTATE_180
+                    canvas_w, canvas_h = draw_w, draw_h
+                    inv_transpose = Image.ROTATE_180
+                flat = _render_text_distributed(new_text, canvas_w, canvas_h)
+                text_img = flat.transpose(inv_transpose)
             pil_modified = Image.fromarray(modified)
             pil_modified.paste(text_img, (draw_x, draw_y), text_img)
             modified = np.array(pil_modified)

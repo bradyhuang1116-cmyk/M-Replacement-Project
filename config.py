@@ -17,7 +17,7 @@ except ImportError:
 # ── 字体路径 ──
 FONT_PATH = os.getenv(
     "FONT_PATH",
-    os.path.join(BASE_DIR, "fonts", "dingliesongtypeface20241217-2.ttf"),
+    os.path.join(BASE_DIR, "fonts", "basictitlefont-1.ttf"),
 )
 PDF_FONT_PATH = os.getenv("PDF_FONT_PATH", FONT_PATH)
 
@@ -63,6 +63,8 @@ MANUAL_EDITOR_ORIGINAL_DIR = os.getenv("MANUAL_EDITOR_ORIGINAL_DIR", "")
 
 # ── 持久化数据（队列 / 日志）──（§12 Phase 2+）
 DATA_DIR = os.getenv("DATA_DIR", os.path.join(BASE_DIR, "data"))
+# Worker 并行数（>1 时多线程并行处理；默认 1 保持串行兼容）
+WORKER_COUNT = int(os.getenv("WORKER_COUNT", "1"))
 QUEUE_DB_PATH = os.getenv("QUEUE_DB_PATH", os.path.join(DATA_DIR, "queue.db"))
 # 图纸处理日志表（开放给 PLM 后台访问）；字段对齐客户 R_V_TD_FILEPATH
 PROCESS_LOG_DB_PATH = os.getenv("PROCESS_LOG_DB_PATH", os.path.join(DATA_DIR, "process_log.db"))
@@ -88,8 +90,17 @@ WATCH_STABILITY_SECONDS = float(os.getenv("WATCH_STABILITY_SECONDS", "3.0"))
 # 扫描 inbox 的间隔（秒）；当前不用 inotify/ReadDirectoryChangesW，纯轮询足够
 WATCH_SCAN_INTERVAL = float(os.getenv("WATCH_SCAN_INTERVAL", "2.0"))
 
+# ── 几何矫正 / 词级材料列（默认开，可用环境变量回退）──
+# 收到图后整体 deskew+dewarp 矫正，矫正图即交付物；关闭则走原路径(字节等同现状)
+ENABLE_GEOM_CORRECTION = os.getenv("ENABLE_GEOM_CORRECTION", "1") == "1"
+# 材料列改用词级(字符级 return_word_box)检测为主，原 detect_cyan_boxes 双策略兜底
+ENABLE_WORD_MATERIAL = os.getenv("ENABLE_WORD_MATERIAL", "1") == "1"
+# 绿框剔除+重定位：PLM 已知图号且绿框选中值≠图号(判框错误吸机种名等)时，
+# 盖白误吸区后在绿框搜索区重新定位图号真正所在单元格；无图号/关闭则走原逻辑
+ENABLE_GREEN_RELOCATE = os.getenv("ENABLE_GREEN_RELOCATE", "1") == "1"
+
 # 默认替换前缀
-DEFAULT_PREFIXES = ["Y", "X", "B", "H"]
+DEFAULT_PREFIXES = ["Y", "X", "B"]
 NEW_PREFIX = "H"
 
 

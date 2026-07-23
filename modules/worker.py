@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    """Single-threaded queue consumer."""
+    """Queue consumer — single or multi-threaded (WORKER_COUNT env)."""
 
     def __init__(
         self,
@@ -38,18 +38,21 @@ class Worker:
         ensure_vlm: bool = True,
         watch_output_dir: str | Path | None = None,
         watch_failed_dir: str | Path | None = None,
+        worker_count: int | None = None,
     ):
         self.queue = queue
         self.output_root = str(output_root or WORKER_OUTPUT_DIR)
         self.poll_interval = poll_interval if poll_interval is not None else WORKER_POLL_INTERVAL
         self.max_retry = max_retry if max_retry is not None else WORKER_MAX_RETRY
         self.ensure_vlm = ensure_vlm
+        self.worker_count = worker_count if worker_count is not None else 1
         self.watch_output_dir = str(watch_output_dir or WATCH_OUTPUT_DIR)
         self.watch_failed_dir = str(watch_failed_dir or WATCH_FAILED_DIR)
 
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
         self._vlm_ready = False
+        self._vlm_lock = threading.Lock()
 
         from modules.process_log import ProcessLog
 
@@ -127,25 +130,48 @@ class Worker:
         return "ocr"
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
+        if self._threads and any(t.is_alive() for t in self._threads):
             return
         Path(self.output_root).mkdir(parents=True, exist_ok=True)
         stale = self.queue.reset_stale_running()
         if stale:
             logger.info("Worker startup reset %s stale running jobs to pending", stale)
+
+        # VLM 就绪检查只做一次（多线程共享同一个 vLLM 服务）
+        if self.ensure_vlm and not self._vlm_ready:
+            ok, msg = self._ensure_vlm_ready()
+            if not ok:
+                logger.error("VLM startup failed; Worker not started: %s", msg)
+                return
+            self._vlm_ready = True
+
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run_loop, name="job-worker", daemon=True)
-        self._thread.start()
-        logger.info("Worker started; output_root=%s", self.output_root)
+        self._threads = []
+        for i in range(self.worker_count):
+            t = threading.Thread(
+                target=self._run_loop,
+                args=(i,),
+                name=f"job-worker-{i}",
+                daemon=True,
+            )
+            t.start()
+            self._threads.append(t)
+
+        if self.worker_count == 1:
+            logger.info("Worker started (single-thread); output_root=%s", self.output_root)
+        else:
+            logger.info("Worker started (%s threads); output_root=%s", self.worker_count, self.output_root)
 
     def stop(self, timeout: float = 30.0) -> None:
         self._stop.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
+        for t in self._threads:
+            if t.is_alive():
+                t.join(timeout=timeout)
+        self._threads = []
         logger.info("Worker stopped")
 
     def is_running(self) -> bool:
-        return bool(self._thread and self._thread.is_alive())
+        return bool(self._threads and any(t.is_alive() for t in self._threads))
 
     def _sync_config(self) -> None:
         import config as cfg
@@ -156,7 +182,7 @@ class Worker:
         self.watch_failed_dir = str(cfg.WATCH_FAILED_DIR)
         self.output_root = str(cfg.WORKER_OUTPUT_DIR)
 
-    def _run_loop(self) -> None:
+    def _run_loop(self, worker_id: int = 0) -> None:
         while not self._stop.is_set():
             self._sync_config()
             job = self.queue.claim_next_pending()
@@ -430,11 +456,10 @@ class Worker:
             return
 
         if self.ensure_vlm and not self._vlm_ready:
-            ok, msg = self._ensure_vlm_ready()
-            if not ok:
-                self._handle_failure(job, f"VLM startup failed: {msg}")
-                return
-            self._vlm_ready = True
+            # VLM 应在 start() 阶段已就绪；未就绪时跳过本次（下轮重试）
+            logger.warning("[job=%s] VLM not ready; requeuing", job.id)
+            self.queue.mark_failed(job.id, "VLM not ready")
+            return
 
         base_output = os.path.join(self.output_root, OUTPUT_SUBDIR)
         vlmocr_dir = os.path.join(base_output, VLMOCR_SUBDIR)
@@ -442,11 +467,35 @@ class Worker:
         os.makedirs(vlmocr_dir, exist_ok=True)
         os.makedirs(pdf_dir, exist_ok=True)
 
+        # 处理日志落盘到 <output_root>/OUTPUT/job_<时间戳>.log（与 API 路径一致）
+        log_handler = None
+        try:
+            log_path = os.path.join(
+                base_output, f"job_{time.strftime('%Y%m%d_%H%M%S')}.log")
+            log_handler = logging.FileHandler(log_path, encoding="utf-8")
+            log_handler.setLevel(logging.INFO)
+            log_handler.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"))
+            logging.getLogger().addHandler(log_handler)
+        except Exception as exc:
+            logger.warning("[job=%s] Failed to create job log file: %s", job.id, exc)
+            log_handler = None
+
+        try:
+            self._process_one_inner(job, base_output, vlmocr_dir, pdf_dir)
+        finally:
+            if log_handler is not None:
+                logging.getLogger().removeHandler(log_handler)
+                log_handler.close()
+
+    def _process_one_inner(self, job: Job, base_output: str,
+                           vlmocr_dir: str, pdf_dir: str) -> None:
         start = time.time()
         try:
             from modules.batch_processor import process_single_file
 
-            result = process_single_file(job.file_path, self.output_root)
+            result = process_single_file(
+                job.file_path, self.output_root, drawing_no=job.drawing_no)
         except Exception as exc:
             logger.error("[job=%s] Processing failed: %s\n%s", job.id, exc, traceback.format_exc())
             self._handle_failure(job, str(exc))

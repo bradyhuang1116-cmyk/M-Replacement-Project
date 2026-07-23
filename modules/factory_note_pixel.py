@@ -16,6 +16,7 @@ import os
 import re
 import csv
 import logging
+import threading
 
 import cv2
 import numpy as np
@@ -26,6 +27,7 @@ from modules.region_detector import (
     BBox,
     _get_ocr_v5,
     _parse_ocr_results_common,
+    _classify_corner_ori,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,68 @@ def _get_v5():
 
 # ── Y 编号正则（含 V→Y 误识兜底）────────────────────────────────
 _FN_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_Y_RE = re.compile(make_pattern(DEFAULT_PREFIXES))
 _V_RE = re.compile(r"V(?=[A-Z0-9]*\d)[A-Z0-9]{6,}")
+
+# ── _localize_y_box 增强开关（工厂注意框选精修）─────────────────────
+# ① 溢出兜底时用 VLM 重认修正幻读的 code（如 ')' 幻读成 '1' → X06AX-791），
+#    再用正确 code 重跑二分定位，修 X06AX-791 溢出整行(宽694→295)。
+# ③ 上下墨迹贴合：用 VLM 同一编号分词的 y 范围收紧上下边界，修框上下不贴字
+#    （如 YA046D753-02 上边界框到横线，高69→44）。剔窄笔画(②)未并入。
+FN_LOCALIZE_REFINE = True
+_SAME_ID_TBL = str.maketrans({'O': '0', 'I': '1', 'S': '5', 'Z': '2', 'B': '8'})
+
+
+def _same_id(a: str, b: str) -> bool:
+    """两编号是否'基本同一'：OCR混淆归一(O→0等)+去非字母数字后 相等，
+    或一个是另一个去尾≤2字符（容忍 X06AX-791 vs X06AX-79 的幻读1）。"""
+    def _n(s):
+        return re.sub(r'[^A-Z0-9]', '', (s or '').upper()).translate(_SAME_ID_TBL)
+    a, b = _n(a), _n(b)
+    if not a or not b:
+        return False
+    return (a == b or (a.startswith(b) and len(a)-len(b) <= 2)
+            or (b.startswith(a) and len(b)-len(a) <= 2))
+
+
+def _vlm_same_poly(crop_np, poly, target_tok):
+    """VLM 放大重认 crop，找与 target_tok '基本同一'的分词，返回
+    (vtok, sub_x1, sub_x2, crop_top, crop_bot) 或 None。坐标为 crop 绝对坐标。"""
+    x1, y1, x2, y2 = _poly_bbox(poly)
+    H, W = crop_np.shape[:2]
+    ch = max(8, y2 - y1); pad = max(int(ch * 0.6), 12)
+    sx1 = max(0, x1 - pad); sy1 = max(0, y1); sx2 = min(W, x2 + pad); sy2 = min(H, y2)
+    sub = crop_np[sy1:sy2, sx1:sx2]
+    UP = 2.5
+    try:
+        its = _parse_ocr_results_common(
+            _get_vlm().predict(cv2.resize(sub, None, fx=UP, fy=UP,
+                                          interpolation=cv2.INTER_CUBIC)))
+    except Exception:  # noqa: BLE001
+        return None
+    for p2, t2, _sc in its:
+        if p2 is None or len(p2) == 0:
+            continue
+        vt = _find_y_token(t2 or "")
+        if vt and _same_id(target_tok, vt):
+            bx1, by1_, bx2, by2_ = _poly_bbox(p2)
+            return (vt, sx1 + int(bx1 / UP), sx1 + int(bx2 / UP),
+                    sy1 + int(by1_ / UP), sy1 + int(by2_ / UP))
+    return None
+
+
+def _fit_updown(crop_np, abs_l, abs_r, vTop, vBot):
+    """在编号列 [abs_l,abs_r] 内、VLM poly 的 y 范围 [vTop,vBot] 内按墨迹收紧上下边界。"""
+    g2 = cv2.cvtColor(crop_np, cv2.COLOR_RGB2GRAY) if crop_np.ndim == 3 else crop_np
+    _, bw2 = cv2.threshold(g2, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    vTc = max(0, vTop); vBc = min(crop_np.shape[0], vBot)
+    if vBc <= vTc or abs_r <= abs_l:
+        return vTc, vBc
+    win = bw2[vTc:vBc, abs_l:abs_r]
+    rh = (win > 0).any(axis=1); ys = np.where(rh)[0]
+    if len(ys):
+        return vTc + int(ys[0]), vTc + int(ys[-1]) + 1
+    return vTc, vBc
 
 
 def _safe_filename_tag(text: str, max_len: int = 32) -> str:
@@ -62,14 +125,31 @@ def _safe_filename_tag(text: str, max_len: int = 32) -> str:
 
 
 def _find_y_token(text: str) -> str | None:
-    """在 OCR 文本里搜符合 Y_PATTERN 的 token；首字母为 V 时回填为 Y。"""
+    """在 OCR 文本里搜符合 Y_PATTERN 的 token；首字母为 V 时回填为 Y。
+
+    左边界 (?<![A-Z0-9])：编号首字母(Y/X/B/H)前不得紧贴字母或数字，即编号必须
+    是一个字母数字连续段的开头。否则会从元件型号内部误截——如 OCR 识别为整段的
+    'MC74HC4046AF'(首字母 M，型号)会被从内部 H 截出假编号 'HC4046AF'。真编号
+    前面是分隔符(如 '1.021.YA057C800' 的 '.'、空格、行首)则不受影响，正常匹配。
+
+    含连字符编号 (STRUCT 分支)：X45AT-03 / X44HT-02 / X55GA-21 这类"首字母+数字段
+    +字母段+连字符+数字段"的编号，连字符打断了连续段，首字母后连续仅 5 位，不满足
+    基础 pattern 的 {6,}，会整列漏检。STRUCT 分支 [P][0-9]{1,3}[A-Z]{1,3}-[0-9]{1,4}
+    专门纳入这类；因要求完整"数字段+字母段+连字符+数字段"结构，不会误吞 H35 这种
+    行号短序号，也不误中 HCPL-7840-300(H 后是纯字母段 CPL，无数字段)。
+    """
     if not text:
         return None
     up = text.upper()
-    m = re.search(make_pattern(DEFAULT_PREFIXES), up)
+    chars = "".join(p.upper() for p in DEFAULT_PREFIXES)
+    cls = chars if len(chars) == 1 else f"[{chars}]"
+    LB = r"(?<![A-Z0-9])"
+    STRUCT = rf"{cls}[0-9]{{1,3}}[A-Z]{{1,3}}-[0-9]{{1,4}}"
+    # 结构式在前(纳入 X45AT-03 类)，基础 6+ 在后(保 YX304B657A-01→YX304B657A)
+    m = re.search(rf"{LB}(?:{STRUCT}|{make_pattern(DEFAULT_PREFIXES)})", up)
     if m:
         return m.group()
-    m = _V_RE.search(up)
+    m = re.search(LB + r"V(?=[A-Z0-9]*\d)[A-Z0-9]{6,}", up)
     if m:
         return "Y" + m.group()[1:]
     return None
@@ -95,6 +175,39 @@ def _bbox_iou(a, b):
     bb = max(0, bx2 - bx1) * max(0, by2 - by1)
     union = aa + bb - inter
     return inter / union if union > 0 else 0.0
+
+
+# ── ROI 旋转坐标变换（工厂注意竖排文字处理）────────────────────
+def _rot_point_fwd(x, y, W0, H0, rot):
+    """把原始 ROI 坐标 (x,y) 变换到旋转后坐标系。W0/H0=原始宽/高。"""
+    if rot == cv2.ROTATE_90_CLOCKWISE:
+        return H0 - 1 - y, x
+    if rot == cv2.ROTATE_90_COUNTERCLOCKWISE:
+        return y, W0 - 1 - x
+    return x, y
+
+
+def _rot_point_inv(x, y, W0, H0, rot):
+    """把旋转后坐标 (x,y) 逆变换回原始 ROI 坐标。W0/H0=原始宽/高。"""
+    if rot == cv2.ROTATE_90_CLOCKWISE:
+        # fwd: (x,y)->(H0-1-y, x); inv:
+        return y, H0 - 1 - x
+    if rot == cv2.ROTATE_90_COUNTERCLOCKWISE:
+        # fwd: (x,y)->(y, W0-1-x); inv:
+        return W0 - 1 - y, x
+    return x, y
+
+
+def _rot_bbox(box, W0, H0, rot, inv=False):
+    """对 bbox(x1,y1,x2,y2) 做旋转/逆旋转，用两对角点变换后重新 min/max。"""
+    if rot is None or box is None:
+        return box
+    x1, y1, x2, y2 = box
+    f = _rot_point_inv if inv else _rot_point_fwd
+    pts = [f(x1, y1, W0, H0, rot), f(x2, y1, W0, H0, rot),
+           f(x2, y2, W0, H0, rot), f(x1, y2, W0, H0, rot)]
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    return (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
 
 
 def _column_runs(bw):
@@ -169,6 +282,12 @@ def _localize_y_box(crop_np, poly, target_tok):
     gray = cv2.cvtColor(sub, cv2.COLOR_RGB2GRAY) if sub.ndim == 3 else sub
     _, bwm = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     runs = _column_runs(bwm)
+    # 贯穿线剔除:sub 条带里若混进横贯全宽的实线(单元格边框线),会在 runs 里形成
+    # 一个跨度≈全宽的墨迹段,污染下游 _snap_to_runs 使框被拉到两端(991 曾 433→505)。
+    # 字符笔画最宽也仅一个字,能横贯全宽的必是线 → 剔除跨度≥80% 全宽的段。
+    _sub_w = x2 - x1
+    if any((re_ - rs) >= _sub_w * 0.8 for rs, re_ in runs):
+        runs = [(rs, re_) for rs, re_ in runs if (re_ - rs) < _sub_w * 0.8]
     step = max(4, (x2 - x1) // 200)
     grid = list(range(0, x2 - x1, step))
     starts_set = sorted({r[0] for r in runs} | set(grid) | {0})
@@ -367,7 +486,53 @@ def _localize_y_box(crop_np, poly, target_tok):
     _, _, status, lc, rc, tok_used = results[0]
 
     lc_snap, rc_snap = _snap_to_runs(lc, rc)
-    return _fallback_box(lc_snap, rc_snap, tok_used)
+    result_poly, result_tok = _fallback_box(lc_snap, rc_snap, tok_used)
+
+    if not FN_LOCALIZE_REFINE:
+        return result_poly, result_tok
+
+    # ── 精修 ①③（crop 局部坐标）──
+    rxs = [p[0] for p in result_poly]; rys = [p[1] for p in result_poly]
+    box_l, box_r = min(rxs), max(rxs)
+    box_t, box_b = min(rys), max(rys)
+    code_out = result_tok
+    _ox1, _oy1, _ox2, _oy2 = _poly_bbox(poly)   # 原始 poly(未加pad)宽, 判溢出基准
+    poly_w = _ox2 - _ox1
+
+    # ① 溢出兜底(框宽≈全候选宽=二分失败) → VLM 重认修正 code, 用正确 code 重跑二分
+    if (box_r - box_l) >= poly_w:
+        same = _vlm_same_poly(crop_np, poly, tok_used)
+        if same:
+            vtok, _vL, _vR, _vT, _vB = same
+            if not _same_id(vtok, tok_used) or vtok.upper() != tok_used.upper():
+                # 用修正 code 重跑本函数的二分(递归一层, 关精修避免死循环)
+                _save = None
+                try:
+                    globals()["FN_LOCALIZE_REFINE"] = False
+                    re_res = _localize_y_box(crop_np, poly, vtok)
+                finally:
+                    globals()["FN_LOCALIZE_REFINE"] = True
+                if re_res is not None:
+                    rp, rt = re_res
+                    rxs2 = [p[0] for p in rp]
+                    if (max(rxs2) - min(rxs2)) < poly_w:   # 修正后收紧成功
+                        rys2 = [p[1] for p in rp]
+                        box_l, box_r = min(rxs2), max(rxs2)
+                        box_t, box_b = min(rys2), max(rys2)
+                        code_out = rt
+
+    # ③ 上下墨迹贴合：用 VLM 同一编号分词的 y 范围收紧上下(仅更紧时采用)
+    same2 = _vlm_same_poly(crop_np, poly, code_out or tok_used)
+    if same2:
+        _vt, _vL, _vR, vTop, vBot = same2
+        nt, nb = _fit_updown(crop_np, box_l, box_r, vTop, vBot)
+        if nb > nt and (nb - nt) <= (box_b - box_t):
+            box_t, box_b = nt, nb
+
+    # 下边界往下扩 3px（不超出 crop 高度）
+    box_b = min(crop_np.shape[0], box_b + 3)
+
+    return [(box_l, box_t), (box_r, box_t), (box_r, box_b), (box_l, box_b)], code_out
 
 
 def _vlm_annotate_single(pil_crop):
@@ -395,6 +560,58 @@ def _vlm_annotate_single(pil_crop):
         logger.info(f"  VLM 二次定位极端兜底：用 VLM 原 polygon 画框，tok={tok}, text='{text}'")
         matched.append(([(int(p[0]), int(p[1])) for p in poly], tok))
     return matched
+
+
+# ── 自动矫正: 小角度倾斜校正(deskew) ─────────────────────────────
+def _fn_auto_deskew(roi_rgb, bw, ref_boxes):
+    """自动矫正搜索区的小角度倾斜。零写死角度——每张图自扫。
+
+    倾斜会让表格横边框斜穿多行,按行统计的连续横线长度不达标 → detect_tables
+    的 h_count 判据失败 → 表格检不出 → 编号识别崩坏(如 994 原 tables=0/h943)。
+    这里在 -1.5~+1.5° 范围扫描,取「横线响应最强」的角度(横线越平直=图越正),
+    对 search_roi / bw / ref_boxes 同步旋正。正的图峰值在 0° 附近,基本不动。
+
+    Args:
+        roi_rgb: 搜索区 RGB。
+        bw: 搜索区二值图(线为白)。
+        ref_boxes: {name: (x1,y1,x2,y2) | None} 材料/绿/橙框在 ROI 坐标。
+    Returns:
+        (roi_r, bw_r, ref_boxes_r, angle_deg)。angle 为 0 时原样返回。
+    """
+    def _resp(a):
+        h, w = bw.shape[:2]
+        M = cv2.getRotationMatrix2D((w / 2, h / 2), -a, 1.0)
+        r = cv2.warpAffine(bw, M, (w, h), flags=cv2.INTER_NEAREST, borderValue=0)
+        hl, _ = extract_table_lines(r)
+        rw = (hl > 0).sum(axis=1)
+        return float(np.sort(rw)[-10:].mean())  # 前10强行均值, 抗单条噪声
+
+    coarse = np.arange(-1.5, 1.51, 0.2)
+    best_a = max(coarse, key=_resp)
+    fine = np.arange(best_a - 0.2, best_a + 0.201, 0.05)
+    ang = float(max(fine, key=_resp))
+    if abs(ang) < 0.05:
+        return roi_rgb, bw, ref_boxes, 0.0
+
+    h, w = bw.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), -ang, 1.0)
+    bw_r = cv2.warpAffine(bw, M, (w, h), flags=cv2.INTER_NEAREST, borderValue=0)
+    roi_r = cv2.warpAffine(roi_rgb, M, (w, h), flags=cv2.INTER_LINEAR, borderValue=255)
+
+    def _rot_box(b):
+        if b is None:
+            return None
+        x1, y1, x2, y2 = b
+        pts = np.array([[x1, y1], [x2, y1], [x1, y2], [x2, y2]], np.float64)
+        pr = (M @ np.c_[pts, np.ones(4)].T).T
+        nx1 = max(0, int(pr[:, 0].min())); ny1 = max(0, int(pr[:, 1].min()))
+        nx2 = min(w, int(pr[:, 0].max())); ny2 = min(h, int(pr[:, 1].max()))
+        if nx2 <= nx1 or ny2 <= ny1:
+            return None
+        return (nx1, ny1, nx2, ny2)
+
+    ref_r = {k: _rot_box(v) for k, v in ref_boxes.items()}
+    return roi_r, bw_r, ref_r, ang
 
 
 # ── V4 保留: 擦除搜索区图纸外框 ─────────────────────────────────
@@ -467,7 +684,8 @@ def erase_drawing_border(bw, h_ratio=0.95, v_ratio=0.95,
 def cluster_table_zone(bw, mc_y1,
                        min_h_len_ratio=0.05, h_xrange_tol_ratio=0.02,
                        min_v_len_ratio=0.03, v_yrange_tol_ratio=0.03,
-                       right_gap_ratio=1.8, buffer=20):
+                       right_gap_ratio=1.8, buffer=20, enable_probe=True,
+                       mc_y2=None):
     sh, sw = bw.shape
     sx1, sy1 = 0, max(0, int(mc_y1))
     sx2, sy2 = sw, sh
@@ -524,6 +742,17 @@ def cluster_table_zone(bw, mc_y1,
     h_x1_med = int(np.median([s["x1"] for s in best_h_set]))
     h_x2_med = int(np.median([s["x2"] for s in best_h_set]))
 
+    # 底边 y 优先采用红框底边(mc_y2)：红框底边在窄列内确定，不受横穿全宽的
+    # 删除线影响；而 best_h_set 取"全宽最长对齐组"，删除线常被误选成底边
+    # (如 986：删除线 [0-3844] 胜出，y_bottom 与右沿都被带偏)。红框底边已
+    # 在上游 _trace_vertical_table 算定且经竖线伴随校正，这里直接复用更可靠。
+    if mc_y2 is not None:
+        mc_y2_roi = int(mc_y2) - sy1
+        if 0 < mc_y2_roi <= rh:
+            logger.info(
+                f"  底边采用红框底边 mc_y2: y_bottom_roi {y_bottom_roi} → {mc_y2_roi}")
+            y_bottom_roi = mc_y2_roi
+
     v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, v_min_len))
     v_lines = cv2.morphologyEx(roi, cv2.MORPH_OPEN, v_kernel, iterations=1)
     num_v, _, stats_v, _ = cv2.connectedComponentsWithStats(v_lines, connectivity=8)
@@ -562,6 +791,39 @@ def cluster_table_zone(bw, mc_y1,
         x_right_roi = max(v_near_h_right)
     else:
         x_right_roi = h_x2_med
+
+    # ── 端点延伸探测：纳入右侧紧贴的相邻表 ──
+    # 这类相邻表的底边与主表底边在同一条 y 线上，相互之间仅有细小断点/间隙
+    # （实测 <20px，远小于字符宽）。connectedComponents 在断点处把贯通底边
+    # 拆成多段，端点 x 各不相同，故 best_h_set 只收主表那段、相邻表被漏掉。
+    # 从右沿出发逐段向右接力：下一段左端点落在 当前右沿+PROBE 内即视为同一条
+    # 底边的延续，吃进其右端点。y 用"跟随式"——参考 y 随每次接力更新为上一段
+    # 的 y，而非固定全局底边 y；这样扫描件横线轻微扭曲(同一底边 y 沿 x 渐变，
+    # 如 987)时仍能逐段跟随接上。表格群结束后右侧无横线段，自然终止不过界。
+    PROBE = 40       # 探测步长(px)，略大于实测最大断点(~20px)，留余量
+    Y_STEP = 18      # 相邻段间 y 容差：跟随扭曲，逐段累积漂移
+    if enable_probe:
+        right_ext = x_right_roi
+        ref_y = y_bottom_roi
+        changed = True
+        while changed:
+            changed = False
+            cand = None
+            for s in h_segs:
+                if (s["x2"] > right_ext
+                        and s["x1"] <= right_ext + PROBE
+                        and abs(s["y"] - ref_y) <= Y_STEP):
+                    if cand is None or s["x2"] > cand["x2"]:
+                        cand = s
+            if cand is not None:
+                right_ext = cand["x2"]
+                ref_y = cand["y"]   # 跟随：参考 y 更新为本段 y
+                changed = True
+        if right_ext > x_right_roi:
+            logger.info(
+                f"  端点延伸探测: 右边界 {x_right_roi} → {right_ext} "
+                f"(跟随式接入相邻表，起始底边y={y_bottom_roi})")
+            x_right_roi = right_ext
 
     zone_left = 0
     zone_top = max(0, sy1 - buffer)
@@ -971,10 +1233,12 @@ def process_variant(bw, tables, table_mask, sh, sw, h_factor, v_factor=1.5):
 # 字段：source_file, token, x1, y1, x2, y2
 # 仅用于人工核对/排查问题；正常流水线不读取。
 _y_box_records: list[dict] = []
+_y_box_lock = threading.Lock()
 
 
 def clear_y_box_records() -> None:
-    _y_box_records.clear()
+    with _y_box_lock:
+        _y_box_records.clear()
 
 
 def record_y_box(source_file: str, token: str, bbox) -> None:
@@ -986,23 +1250,25 @@ def record_y_box(source_file: str, token: str, bbox) -> None:
         x, y, w, h = bbox.x, bbox.y, bbox.w, bbox.h
     else:
         x, y, w, h = bbox
-    _y_box_records.append({
-        "source_file": source_file or "",
-        "token": token or "",
-        "x1": int(x), "y1": int(y),
-        "x2": int(x + w), "y2": int(y + h),
-    })
+    with _y_box_lock:
+        _y_box_records.append({
+            "source_file": source_file or "",
+            "token": token or "",
+            "x1": int(x), "y1": int(y),
+            "x2": int(x + w), "y2": int(y + h),
+        })
 
 
 def flush_y_boxes_csv(out_path: str) -> int:
     """把累计的 Y 框写入 CSV；返回记录数。空列表也会写出仅含表头的 CSV。"""
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    with open(out_path, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=[
-            "source_file", "token", "x1", "y1", "x2", "y2"])
-        w.writeheader()
-        w.writerows(_y_box_records)
-    n = len(_y_box_records)
+    with _y_box_lock:
+        with open(out_path, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=[
+                "source_file", "token", "x1", "y1", "x2", "y2"])
+            w.writeheader()
+            w.writerows(_y_box_records)
+        n = len(_y_box_records)
     logger.info(f"Y 编号框坐标汇总: {out_path} ({n} 条)")
     return n
 
@@ -1011,6 +1277,136 @@ def flush_y_boxes_csv(out_path: str) -> int:
 STRICT_LEVELS = ["strict"]
 H_FACTORS = [8]
 TABLE_Y_BUFFER = 30
+FN_ORIENT_VOTE_N = 5  # 方向投票抽样数：取最大的 N 个候选投票
+FN_ORIENT_VOTE_BY_TEXT = True  # True=按 v5 文字框数取前N投票（避开图形块误判）；False=按面积
+
+# ── found_codes 框规整（宽度归一 + 首/尾行横线定上下边界）────────
+FN_NORM_DEV = 0.15       # 框宽偏离同结构组中位 >此比例才归一
+FN_NORM_MIN_GROUP = 3    # 同结构组样本 <此数不归一（中位不可靠）
+FN_COL_X_TOL = 120       # 列聚类：框中心 x 间距 ≤此值视为同列
+FN_HLINE_PROBE = 70      # 首/尾行找横线的纵向探测距离(px)
+
+
+def _fn_structure(code: str) -> str:
+    """把编号抽象成结构串：字母→L 数字→D 其它(符号)→S。用于同类分组。"""
+    return ''.join('L' if c.isalpha() else 'D' if c.isdigit() else 'S'
+                   for c in code)
+
+
+def _fn_local_hline(gray, b, edge_y, probe=FN_HLINE_PROBE, min_w_ratio=0.4):
+    """从 edge_y 往下 probe 范围、在框宽内做 morph 横线检测，返回最靠近
+    edge_y 的横线 y(整图坐标)；无则 None。"""
+    x1, x2 = b.x, b.x2
+    y1 = edge_y
+    y2 = min(gray.shape[0], edge_y + probe)
+    if y2 - y1 < 3 or x2 - x1 < 4:
+        return None
+    roi = gray[y1:y2, x1:x2]
+    _, th = cv2.threshold(roi, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    kw = max(int((x2 - x1) * min_w_ratio), 10)
+    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (kw, 1))
+    hm = cv2.morphologyEx(th, cv2.MORPH_OPEN, hk, iterations=1)
+    ys = [yy for yy in range(hm.shape[0])
+          if hm[yy].sum() > 255 * (x2 - x1) * 0.3]
+    if not ys:
+        return None
+    return y1 + min(ys)
+
+
+def _cluster_by_proximity(items: list) -> list:
+    """把结构串已相同的一批编号，按纵向位置链式聚类成组。
+    只有"位置接近(纵向间隙≤2×框高) + 字号接近(框高差≤30%) + 字符数相同"的
+    相邻编号才归入同簇。用于宽度归一分组——避免把表外/远处的同名编号误当同组
+    （归一本为表内防溢出，表外编号字号/位置不同，一刀切同结构分组会误伤）。
+    """
+    if not items:
+        return []
+    items = sorted(items, key=lambda f: f["bbox"].y)
+    clusters = [[items[0]]]
+    for f in items[1:]:
+        prev = clusters[-1][-1]
+        b, pb = f["bbox"], prev["bbox"]
+        vgap = max(0, (b.y - pb.y2) if b.y > pb.y2 else (pb.y - b.y2))
+        h_ref = max(pb.h, 1)
+        near = vgap <= 2 * h_ref
+        same_size = abs(b.h - pb.h) / h_ref <= 0.30
+        same_len = len(f["code"]) == len(prev["code"])
+        if near and same_size and same_len:
+            clusters[-1].append(f)
+        else:
+            clusters.append([f])
+    return clusters
+
+
+def _normalize_found_codes(found_codes: list, image_rgb: np.ndarray) -> None:
+    """就地规整 found_codes 的 bbox（工厂注意专用，不影响红/绿/橙框）：
+
+    1) 宽度归一：按编号结构串(L/D/S)分组，组内样本≥FN_NORM_MIN_GROUP 时取框宽
+       中位为通用宽，偏离>FN_NORM_DEV 的框以中心为锚拉回该宽（修右边界吃竖线等）。
+    2) 首/尾行横线定界：按框中心 x 聚类分列，列内按 y 排序：
+       - 首行：从 OCR 框上边界往下找最近横线，有则用作新上边界；
+       - 尾行：从 OCR 框下边界往下找最近横线，有则用作新下边界。
+    """
+    if not found_codes:
+        return
+    import statistics as _st
+    from collections import defaultdict
+
+    # 只对横排框(w>=h)做规整；竖排编号(h>w，如竖写的 YE309C848A)的宽/高语义与
+    # 横排相反，宽度归一和首/尾行横线定界会误伤（曾把竖排框上边界压掉切字），故
+    # 竖排框原样保留、不参与规整。
+    found_codes = [f for f in found_codes if f["bbox"].w >= f["bbox"].h]
+    if not found_codes:
+        return
+
+    # 1) 宽度归一
+    groups = defaultdict(list)
+    for f in found_codes:
+        groups[_fn_structure(f["code"])].append(f)
+    for _pat, items in groups.items():
+        # 结构串相同的再按位置/字号/字符数链式聚类，只对同簇(表内同组)归一，
+        # 避免表外/远处的同名编号被误拉到同一宽度(w=1234→620 那类误伤)。
+        for cluster in _cluster_by_proximity(items):
+            if len(cluster) < FN_NORM_MIN_GROUP:
+                continue
+            med_w = int(_st.median([f["bbox"].w for f in cluster]))
+            if med_w <= 0:
+                continue
+            for f in cluster:
+                b = f["bbox"]
+                if abs(b.w - med_w) / med_w > FN_NORM_DEV:
+                    cx = b.x + b.w / 2.0
+                    new_x = int(round(cx - med_w / 2.0))
+                    logger.info(f"  框宽归一: {f['code']} w={b.w}→{med_w} "
+                                f"(同簇中位)")
+                    f["bbox"] = BBox(new_x, b.y, med_w, b.h)
+
+    # 2) 首/尾行横线定界
+    gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
+    items = sorted(found_codes, key=lambda f: f["bbox"].x + f["bbox"].w / 2.0)
+    cols = []
+    for f in items:
+        cx = f["bbox"].x + f["bbox"].w / 2.0
+        if cols and cx - (cols[-1][-1]["bbox"].x
+                          + cols[-1][-1]["bbox"].w / 2.0) <= FN_COL_X_TOL:
+            cols[-1].append(f)
+        else:
+            cols.append([f])
+    for col in cols:
+        if not col:
+            continue
+        col.sort(key=lambda f: f["bbox"].y)
+        first, last = col[0], col[-1]
+        b = first["bbox"]
+        hy = _fn_local_hline(gray, b, edge_y=b.y)
+        if hy is not None and b.y < hy < b.y2:
+            logger.info(f"  首行上边界对齐横线: {first['code']} y={b.y}→{hy}")
+            first["bbox"] = BBox(b.x, hy, b.w, b.y2 - hy)
+        b = last["bbox"]
+        hy = _fn_local_hline(gray, b, edge_y=b.y2)
+        if hy is not None and hy > b.y2:
+            logger.info(f"  尾行下边界对齐横线: {last['code']} y2={b.y2}→{hy}")
+            last["bbox"] = BBox(b.x, b.y, b.w, hy - b.y)
 
 
 def detect_factory_note_codes_v6(
@@ -1039,10 +1435,16 @@ def detect_factory_note_codes_v6(
     green_bbox = regions.get("bottom_right_number")
     orange_bbox = regions.get("top_left_number")
 
-    fn_top = 0
+    fn_top = orange_bbox.y if orange_bbox is not None else 0
     fn_bottom = green_bbox.y if green_bbox is not None else img_h
     fn_left = orange_bbox.x if orange_bbox is not None else 0
-    fn_right = img_w
+    fn_right = green_bbox.x2 if green_bbox is not None else img_w
+    # 绿框右边界按图号 OCR 框画时，其右侧可能仍有工厂注意内容被漏在搜索区外：
+    # 搜索区右界向右扩「搜索区宽 5%」。仅在有绿框且右边界=OCR 时生效。
+    if green_bbox is not None and (regions.get("_metadata", {}) or {}).get("green_right_is_ocr"):
+        _ext = int((fn_right - fn_left) * 0.05)
+        fn_right = min(fn_right + _ext, img_w)
+        logger.info(f"  Factory Note v6: 绿框右边界=OCR，搜索区右界+{_ext}px(搜索区宽5%)")
     if fn_bottom <= fn_top or fn_right <= fn_left:
         logger.warning(f"  Factory Note v6: search_roi 退化, "
                        f"top={fn_top} bottom={fn_bottom} left={fn_left} right={fn_right}")
@@ -1051,16 +1453,40 @@ def detect_factory_note_codes_v6(
     search_roi = image_rgb[fn_top:fn_bottom, fn_left:fn_right].copy()
     sh, sw = search_roi.shape[:2]
 
+    # ── 竖排判定：整片 ROI 跑一次方向分类，判 90/270 即旋转校正 ──
+    # 旋转后中间管线（擦边框/表格/V5/VLM）参数完全不变，最后 Y 坐标逆映射回原图。
+    # 开关：FN_ROTATE=1 启用；默认关闭（验证不旋转裁切阶段）。
+    fn_rot = None
+    roi_W0, roi_H0 = sw, sh
+    if os.environ.get("FN_ROTATE") == "1":
+        try:
+            _ang, _sc = _classify_corner_ori(search_roi)
+        except Exception as e:  # noqa: BLE001
+            _ang, _sc = 0, 0.0
+            logger.warning(f"  Factory Note v6: ROI 方向分类失败: {e}")
+        if _ang == 270:
+            fn_rot = cv2.ROTATE_90_CLOCKWISE
+        elif _ang == 90:
+            fn_rot = cv2.ROTATE_90_COUNTERCLOCKWISE
+    if fn_rot is not None:
+        logger.info(f"  Factory Note v6: ROI 竖排(方向={_ang}/{_sc:.2f})，"
+                    f"旋转校正后检测")
+        search_roi = cv2.rotate(search_roi, fn_rot)
+        sh, sw = search_roi.shape[:2]
+
     def _to_roi(bbox):
         if bbox is None:
             return None
         x1 = max(bbox.x - fn_left, 0)
         y1 = max(bbox.y - fn_top, 0)
-        x2 = min(bbox.x2 - fn_left, sw)
-        y2 = min(bbox.y2 - fn_top, sh)
+        x2 = min(bbox.x2 - fn_left, roi_W0)
+        y2 = min(bbox.y2 - fn_top, roi_H0)
         if x2 <= x1 or y2 <= y1:
             return None
-        return (int(x1), int(y1), int(x2), int(y2))
+        box = (int(x1), int(y1), int(x2), int(y2))
+        if fn_rot is not None:
+            box = _rot_bbox(box, roi_W0, roi_H0, fn_rot)
+        return box
 
     ref_boxes = {
         "material_code": _to_roi(red_bbox),
@@ -1073,6 +1499,13 @@ def detect_factory_note_codes_v6(
 
     bw_no_border, _, _ = erase_drawing_border(bw)
     bw = bw_no_border
+
+    # 自动矫正: 小角度倾斜校正(见 _fn_auto_deskew)。search_roi/bw/ref_boxes 同步旋正,
+    # 修复倾斜导致表格横线按行统计不达标 → 表格漏检 → 编号识别崩坏(如 994)。
+    search_roi, bw, ref_boxes, _fn_ang = _fn_auto_deskew(search_roi, bw, ref_boxes)
+    sh, sw = bw.shape
+    if abs(_fn_ang) >= 0.05:
+        logger.info(f"  Factory Note v6: 自动矫正 {_fn_ang:+.2f}deg")
 
     # 性能裁切：底部贯穿线以下整片丢掉
     y_cut = find_bottom_span_y(bw)
@@ -1098,9 +1531,9 @@ def detect_factory_note_codes_v6(
     table_zone = None
     mc_roi = ref_boxes["material_code"]
     if mc_roi is not None:
-        _, mc_y1_roi, _, _ = mc_roi
+        _, mc_y1_roi, _, mc_y2_roi = mc_roi
         zone_out, _ = cluster_table_zone(
-            bw, mc_y1=mc_y1_roi, buffer=TABLE_Y_BUFFER)
+            bw, mc_y1=mc_y1_roi, buffer=TABLE_Y_BUFFER, mc_y2=mc_y2_roi)
         if zone_out is not None:
             table_zone = zone_out
 
@@ -1109,18 +1542,53 @@ def detect_factory_note_codes_v6(
         _, _, tz_right, tz_bottom = table_zone
         exclusion_zone = (0, 0, int(tz_right), int(tz_bottom))
 
-    # 把 exclusion_zone 在 bw 上整片涂白（255=ink→0），后续 OCR 不在该区域内出框
-    bw_for_ocr = bw
-    if exclusion_zone is not None:
-        bw_for_ocr = bw.copy()
-        ex1, ey1, ex2, ey2 = exclusion_zone
-        pad = 3
-        bh, bw_w = bw_for_ocr.shape
-        ex1 = max(0, ex1 - pad)
-        ey1 = max(0, ey1 - pad)
-        ex2 = min(bw_w, ex2 + pad)
-        ey2 = min(bh, ey2 + pad)
-        bw_for_ocr[ey1:ey2, ex1:ex2] = 0
+    # 把 exclusion_zone + 橙框(左上角图号)涂白排除：
+    #   1) bw_for_ocr(二值图)涂 0 → 候选不在这些区域出框；
+    #   2) search_roi(RGB)物理涂白 255 → OCR 即便被相邻候选 crop 覆盖也读不到图号。
+    # 物理涂白与材料/红框替换一致：按 bbox 矩形填 255，内缩 FILL_MARGIN 避免吃边框线。
+    # 抹实线: 抹掉搜索区内足够长的实线(横≥宽50% / 竖≥高50%),防止长边框/贯穿线
+    # 干扰候选出框与 OCR。用连通域包围盒长度衡量(而非 MORPH_OPEN 的连续像素长),
+    # 故斜线/被交叉打断的长线也能整条抹除。仅动 bw,不影响 search_roi(RGB 仍供 OCR)。
+    _bh, _bw = bw.shape
+    _brd = np.zeros_like(bw)
+    _hl = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
+                           cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1)), 1)
+    _n, _lab, _st, _ = cv2.connectedComponentsWithStats(_hl, connectivity=8)
+    _ix = [i for i in range(1, _n) if _st[i, 2] >= _bw * 0.5]
+    if _ix:
+        _brd = cv2.bitwise_or(_brd, (np.isin(_lab, _ix).astype('uint8') * 255))
+    _vl = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
+                           cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15)), 1)
+    _n, _lab, _st, _ = cv2.connectedComponentsWithStats(_vl, connectivity=8)
+    _ix = [i for i in range(1, _n) if _st[i, 3] >= _bh * 0.5]
+    if _ix:
+        _brd = cv2.bitwise_or(_brd, (np.isin(_lab, _ix).astype('uint8') * 255))
+    _brd = cv2.dilate(_brd, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), 1)
+    bw = bw.copy()
+    bw[_brd > 0] = 0
+
+    bw_for_ocr = bw.copy()
+    bh, bw_w = bw_for_ocr.shape
+    pad = 3
+    FILL_MARGIN = 2
+
+    def _white_out(zone):
+        if zone is None:
+            return
+        zx1, zy1, zx2, zy2 = zone
+        # 二值图：阻止候选出框
+        bx1 = max(0, zx1 - pad); by1 = max(0, zy1 - pad)
+        bx2 = min(bw_w, zx2 + pad); by2 = min(bh, zy2 + pad)
+        if bx2 > bx1 and by2 > by1:
+            bw_for_ocr[by1:by2, bx1:bx2] = 0
+        # RGB 物理涂白：阻止 OCR 读到内容（内缩 FILL_MARGIN，与红框替换一致）
+        rx1 = max(0, zx1 + FILL_MARGIN); ry1 = max(0, zy1 + FILL_MARGIN)
+        rx2 = min(sw, zx2 - FILL_MARGIN); ry2 = min(sh, zy2 - FILL_MARGIN)
+        if rx2 > rx1 and ry2 > ry1:
+            search_roi[ry1:ry2, rx1:rx2] = 255
+
+    _white_out(exclusion_zone)
+    _white_out(ref_boxes.get("top_left_number"))
 
     found_codes: list[dict] = []
 
@@ -1128,6 +1596,11 @@ def detect_factory_note_codes_v6(
         tables, table_mask, _ = detect_tables(bw, strict_level=strict, zone=table_zone)
 
         for h_factor in H_FACTORS:
+            # 新流程: 先把已检出表格(蓝框)的整个矩形区从 bw_for_ocr 遮盖掉,
+            # 再让 process_variant 出文字候选(绿框),避免绿框套住蓝框导致重复识别。
+            for _tb in tables:
+                _x1, _y1, _x2, _y2 = [int(v) for v in _tb[:4]]
+                bw_for_ocr[max(0, _y1):_y2, max(0, _x1):_x2] = 0
             tight = process_variant(bw_for_ocr, tables, table_mask, sh, sw, h_factor)
 
             def _inside_ex(box):
@@ -1147,6 +1620,71 @@ def detect_factory_note_codes_v6(
                     continue
                 crop_targets.append(("table", tb[:4]))
 
+            # ── 抽样方向投票：在候选里按面积取最大的 FN_ORIENT_VOTE_N 个，
+            #    各自丢进方向分类器(非OCR)，竖排(90/270)占比 ≥1/3 则整批旋转。
+            #    只旋转小图，候选检测不变；结果坐标再逆旋转回 ROI。
+            #    分类器 angle 语义：需逆时针转多少度才正立 → 90 用 CCW、270 用 CW。
+            patch_rot = None
+
+            def _clip_box(box):
+                bx1, by1, bx2, by2 = [int(v) for v in box[:4]]
+                bx1 = max(0, bx1); by1 = max(0, by1)
+                bx2 = min(sw, bx2); by2 = min(sh, by2)
+                return bx1, by1, bx2, by2
+
+            vote_pool = []
+            for _kind, _box in crop_targets:
+                cb = _clip_box(_box)
+                if cb[2] - cb[0] < 6 or cb[3] - cb[1] < 6:
+                    continue
+                vote_pool.append(cb)
+            # 未旋转 crop 的 v5 结果缓存，键=clip 后 box；主循环在不旋转时复用
+            _v5_cache: dict[tuple[int, int, int, int], list] = {}
+            if FN_ORIENT_VOTE_BY_TEXT:
+                # 按 v5 文字框数取前 N（图形块框数少→不进投票，避免误翻）。
+                # 此处对每候选跑一次 v5 并缓存；若最终判定不旋转，主循环直接
+                # 复用缓存（正向图零额外开销）；判定要旋转时主循环对旋转后
+                # crop 重跑（方向已变，本躲不掉）。
+                _scored = []
+                for cb in vote_pool:
+                    try:
+                        _, _it = _v5_run(Image.fromarray(
+                            search_roi[cb[1]:cb[3], cb[0]:cb[2]]))
+                        _v5_cache[cb] = _it
+                        _nb = sum(1 for _p, _t, _s in _it
+                                  if _p is not None and (_t or "").strip())
+                    except Exception:  # noqa: BLE001
+                        _nb = 0
+                    _scored.append((_nb, (cb[2] - cb[0]) * (cb[3] - cb[1]), cb))
+                _scored.sort(key=lambda z: (z[0], z[1]), reverse=True)
+                vote_pool = [z[2] for z in _scored[:FN_ORIENT_VOTE_N]]
+            else:
+                vote_pool.sort(key=lambda b: (b[2] - b[0]) * (b[3] - b[1]),
+                               reverse=True)
+                vote_pool = vote_pool[:FN_ORIENT_VOTE_N]
+
+            n_total = 0
+            n_vert = 0
+            vote_cw = 0
+            vote_ccw = 0
+            for bx1, by1, bx2, by2 in vote_pool:
+                try:
+                    _a, _s = _classify_corner_ori(search_roi[by1:by2, bx1:bx2])
+                except Exception:  # noqa: BLE001
+                    _a, _s = 0, 0.0
+                n_total += 1
+                if _a == 90:
+                    n_vert += 1; vote_ccw += 1
+                elif _a == 270:
+                    n_vert += 1; vote_cw += 1
+            if n_total > 0 and n_vert / n_total >= 1.0 / 3.0:
+                patch_rot = (cv2.ROTATE_90_CLOCKWISE if vote_cw >= vote_ccw
+                             else cv2.ROTATE_90_COUNTERCLOCKWISE)
+                logger.info(
+                    f"  Factory Note v6 [{strict}|h={h_factor}]: "
+                    f"竖排候选 {n_vert}/{n_total} (≥1/3)，整批旋转"
+                    f"{'CW' if patch_rot == cv2.ROTATE_90_CLOCKWISE else 'CCW'} 后 OCR")
+
             seen_global_polys: list[tuple[tuple[int, int, int, int], str]] = []
             v5_total = 0
             v5_kept = 0
@@ -1158,9 +1696,25 @@ def detect_factory_note_codes_v6(
                 if x2 - x1 < 6 or y2 - y1 < 6:
                     continue
                 crop = search_roi[y1:y2, x1:x2]
-                pil_crop = Image.fromarray(crop)
+                crop_W0, crop_H0 = x2 - x1, y2 - y1
+                # 抽样投票判为竖排 → 旋转该小图后再 OCR；poly 坐标稍后逆旋转回 crop
+                crop_ocr = cv2.rotate(crop, patch_rot) if patch_rot is not None else crop
+                pil_crop = Image.fromarray(crop_ocr)
 
-                _, items = _v5_run(pil_crop)
+                def _poly_to_roi_bbox(px1, py1, px2, py2):
+                    # rotated-crop 坐标 → (逆 patch_rot) → crop 局部 → 加偏移到 ROI
+                    cb = _rot_bbox((px1, py1, px2, py2),
+                                   crop_W0, crop_H0, patch_rot, inv=True)
+                    if cb is None:
+                        cb = (px1, py1, px2, py2)
+                    return (cb[0] + x1, cb[1] + y1, cb[2] + x1, cb[3] + y1)
+
+                # 不旋转时复用投票段对同一(未旋转)crop 的 v5 结果，避免重复 OCR
+                _ck = (x1, y1, x2, y2)
+                if patch_rot is None and _ck in _v5_cache:
+                    items = _v5_cache[_ck]
+                else:
+                    _, items = _v5_run(pil_crop)
                 v5_total += 1
 
                 v5_pass, v5_hits, _ = _v5_filter_y(items)
@@ -1176,7 +1730,7 @@ def detect_factory_note_codes_v6(
                     if not tok:
                         continue
                     px1, py1, px2, py2 = _poly_bbox(poly)
-                    gbox = (px1 + x1, py1 + y1, px2 + x1, py2 + y1)
+                    gbox = _poly_to_roi_bbox(px1, py1, px2, py2)
                     crop_y_polys.append((gbox, tok))
                 new_polys: list[tuple[tuple[int, int, int, int], str]] = []
                 for gbox, tok in crop_y_polys:
@@ -1198,16 +1752,27 @@ def detect_factory_note_codes_v6(
                 for _poly, _tk in vlm_matched:
                     xs = [p[0] for p in _poly]
                     ys = [p[1] for p in _poly]
-                    bx1 = int(min(xs)) + x1 + fn_left
-                    by1 = int(min(ys)) + y1 + fn_top
-                    bx2 = int(max(xs)) + x1 + fn_left
-                    by2 = int(max(ys)) + y1 + fn_top
+                    # rotated-crop poly → (逆 patch_rot + 偏移) → ROI 坐标系
+                    rx1, ry1, rx2, ry2 = _poly_to_roi_bbox(
+                        int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
+                    # 逆旋转回原始 ROI 坐标系（fn_rot 整片竖排校正）
+                    rb = _rot_bbox((rx1, ry1, rx2, ry2),
+                                   roi_W0, roi_H0, fn_rot, inv=True)
+                    ox1, oy1, ox2, oy2 = rb if rb is not None else (rx1, ry1, rx2, ry2)
+                    # 映射回整图坐标
+                    bx1 = ox1 + fn_left
+                    by1 = oy1 + fn_top
+                    bx2 = ox2 + fn_left
+                    by2 = oy2 + fn_top
                     w_px = max(bx2 - bx1, 1)
                     h_px = max(by2 - by1, 1)
                     found_codes.append({
                         "code": _tk,
                         "bbox": BBox(bx1, by1, w_px, h_px),
                         "confidence": 1.0,
+                        # patch_rot：检测时把竖排 crop 转正供 OCR 的旋转码。
+                        # 替换端渲染横排文字后按其逆旋转贴回，匹配原图竖排方向。
+                        "orientation": patch_rot,
                     })
 
             logger.info(
@@ -1215,5 +1780,8 @@ def detect_factory_note_codes_v6(
                 f"tables={len(tables)} boxes={len(tight)} "
                 f"v5_run={v5_total}/{len(crop_targets)} "
                 f"v5_y_hit={v5_kept} vlm_drawn={len(found_codes)}")
+
+    # 框规整：宽度归一 + 首/尾行横线定上下边界（工厂注意专用）
+    _normalize_found_codes(found_codes, image_rgb)
 
     return found_codes
